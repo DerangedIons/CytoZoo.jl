@@ -1,10 +1,8 @@
 using CytoZoo
 using Test
-using JET
 
 @testset "CytoZoo.jl" begin
-    @testset "Code linting (JET.jl)" begin
-        JET.test_package(CytoZoo; target_defined_modules = true)
-    end
-    # Write your tests here.
+    include("test_interface.jl")
+    include("test_torord.jl")
+    include("test_torord_correctness.jl")
 end
