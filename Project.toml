@@ -1,0 +1,14 @@
+name = "CytoZoo"
+uuid = "ff4ab244-b974-488c-a5cc-2c6c87261b37"
+authors = ["Kyle Beggs (beggskw@gmail.com) and contributors"]
+version = "0.0.1"
+
+[compat]
+julia = "1.10"
+
+[extras]
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["JET", "Test"]

@@ -1,0 +1,3 @@
+[deps]
+CytoZoo = "ff4ab244-b974-488c-a5cc-2c6c87261b37"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
