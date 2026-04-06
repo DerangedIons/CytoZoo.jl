@@ -2,6 +2,12 @@
 #
 # The ToRORd model has a built-in periodic stimulus (BCL = 1000 ms by default)
 # and a Rush-Larsen exponential integrator for stable time-stepping.
+#
+# Note: implicit ODE solvers (FBDF, etc.) now work with ForwardDiff autodiff
+# after relaxing the type constraints, but the RHS uses log/pow on physiological
+# quantities that can go negative during Newton iterations. Rush-Larsen avoids
+# this by design and is the standard integrator for cardiac cell models.
+#
 # Run: julia --project=examples examples/torord_action_potential.jl
 
 using CytoZoo, CairoMakie
