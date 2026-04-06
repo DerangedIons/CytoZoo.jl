@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is CytoZoo?
 
-A Julia package providing a registry of cardiac cell models with a common functor-based interface. Models work standalone with DifferentialEquations.jl and integrate with Thunderbolt.jl via a package extension. Zero runtime dependencies in the base package — all model code is pure Julia arithmetic.
+A Julia package providing a registry of cardiac cell models with a common functor-based interface. Models can be traditional hand-coded functors or MTK symbolic systems — both implement the same interface. Works standalone with DifferentialEquations.jl and integrates with Thunderbolt.jl and MTKCardiacCellModels via package extensions. Zero runtime dependencies in the base package.
 
 ## Commands
 
@@ -32,7 +32,7 @@ Type hierarchy: `AbstractCellModel` → `AbstractCardiacCellModel` → concrete 
 
 Required interface: functor, `num_states`, `num_parameters`, `transmembrane_potential_index`, `default_initial_state`.
 
-Optional: `has_rush_larsen`/`rush_larsen_step!`, `state_index`/`parameter_index` (Symbol-keyed Dict lookup), `monitor_values!`.
+Optional: `has_rush_larsen`/`rush_larsen_step!`, `state_index`/`parameter_index` (Symbol-keyed Dict lookup), `monitor_values!`, `symbolic_system`/`has_symbolic_system` (MTK-backed models only).
 
 `Spatial{M,F}` wrapper adds position-dependent parameter modulation via `NamedTuple` of `(x, t) -> value` functions. The internal RHS dispatches on `spatial_funcs::F` — when `F === Nothing`, all spatial branches compile away (zero overhead).
 
@@ -50,11 +50,19 @@ Parameters are stored as flat vectors on the struct for GPU compatibility. Named
 
 Naming collision avoidance in the RHS: Faraday's constant → `F_param`, temperature → `T_val`, celltype → `celltype_val` (after spatial function resolution).
 
-### Thunderbolt extension (ext/ThunderboltExt.jl)
+### Extensions
 
-`MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. Since CytoZoo can't depend on Thunderbolt, the extension defines `CytoZooIonicModel{M} <: Thunderbolt.AbstractIonicModel` as an adapter. Users call `thunderbolt_model(model)` (stub in base, implemented in ext).
+Three package extensions, all via weak dependencies:
+
+**SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel`.
+
+**ThunderboltExt** (`ext/ThunderboltExt.jl`) — `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M} <: Thunderbolt.AbstractIonicModel` as an adapter. Users call `thunderbolt_model(model)` (stub in base, implemented in ext).
+
+**MTKCardiacCellModelsExt** (`ext/MTKCardiacCellModelsExt.jl`) — loaded when MTKCardiacCellModels + ModelingToolkit + SciMLBase are available. Defines `MTKCardiacModel{S,Prob} <: AbstractCardiacCellModel` which wraps an MTK-compiled `ODEProblem` and implements the full CytoZoo interface. Contains the `BeelerReuter()` model (8 states, 7 parameters) built from MTKCardiacCellModels components. The compiled model is cached per session to avoid re-compilation. MTK-backed models expose their symbolic system via `symbolic_system(model)`.
 
 ### Adding a new model
+
+**Traditional (hand-coded functor):**
 
 1. Create `src/models/<name>/` with the standard file structure
 2. Define struct `<: AbstractCardiacCellModel` with `parameters::T` and metadata fields
@@ -64,6 +72,13 @@ Naming collision avoidance in the RHS: Faraday's constant → `F_param`, tempera
 6. Include in `src/CytoZoo.jl` and export
 7. Add Thunderbolt dispatch in `ext/ThunderboltExt.jl`
 
+**MTK-backed (symbolic):**
+
+1. Add model constructor stub in `src/CytoZoo.jl` (`function ModelName end; export ModelName`)
+2. Implement model in `ext/MTKCardiacCellModelsExt.jl` using MTKCardiacCellModels components
+3. Call `_build_mtk_model()` helper with the simplified system, ODEProblem, and Vm symbol
+4. Cache the compiled model in a `Ref{Any}(nothing)` to avoid re-compilation
+
 ### Testing
 
-Correctness tests compare CytoZoo output against ArmyHeart reference values (embedded in `test/test_torord_correctness.jl`) at `rtol=1e-10`. Performance tests verify zero allocations on the functor. Source models for cross-validation live at `~/dev/ArmyHeart/` and `~/.julia/dev/TWorld/`.
+Correctness tests compare CytoZoo output against ArmyHeart reference values (embedded in `test/test_torord_correctness.jl`) at `rtol=1e-10`. Performance tests verify zero allocations on the functor. SciMLBase extension tests verify `ODEProblem(model, tspan)` + `solve`. MTK extension tests are conditional — skipped when MTKCardiacCellModels is unavailable (not registered in General). Source models for cross-validation live at `~/dev/ArmyHeart/` and `~/.julia/dev/TWorld/`.

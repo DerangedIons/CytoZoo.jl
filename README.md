@@ -15,6 +15,7 @@ A Julia package providing a registry of cardiac cell models with a common functo
 
 **Key features:**
 - Zero runtime dependencies — all model code is pure Julia arithmetic
+- Dual-backend — hand-coded functor models and MTK symbolic models behind the same interface
 - Functor interface — models are callable structs compatible with DifferentialEquations.jl
 - Rush-Larsen exponential integrator support
 - Spatial heterogeneity via the `Spatial` wrapper (zero overhead when unused)
@@ -39,12 +40,12 @@ du    = similar(u)
 model(du, u, nothing, 0.0)         # evaluate the RHS
 ```
 
-### With DifferentialEquations.jl
+### With OrdinaryDiffEq.jl
 
 ```julia
-using DifferentialEquations
+using OrdinaryDiffEq
 
-prob = ODEProblem(model, u, (0.0, 1000.0))
+prob = ODEProblem(model, (0.0, 1000.0))   # uses default initial state
 sol  = solve(prob, Tsit5())
 ```
 
@@ -57,9 +58,10 @@ rush_larsen_step!(u_new, u, 0.0, 0.01, model)
 
 ## Available Models
 
-| Model | States | Parameters | Cell types | Rush-Larsen |
-|-------|--------|------------|------------|-------------|
-| `ToRORd` | 65 | 181 | endocardial (0), epicardial (1), midmyocardial (2) | yes |
+| Model | States | Parameters | Cell types | Rush-Larsen | Backend |
+|-------|--------|------------|------------|-------------|---------|
+| `ToRORd` | 65 | 181 | endocardial (0), epicardial (1), midmyocardial (2) | yes | functor |
+| `BeelerReuter` | 8 | 7 | — | no | MTK |
 
 ```julia
 ToRORd()                         # Float64, endocardial
@@ -67,6 +69,8 @@ ToRORd(; celltype=1)             # Float64, epicardial
 ToRORd(Float32)                  # Float32, endocardial
 ToRORd(Float32; celltype=2)      # Float32, midmyocardial
 ```
+
+`BeelerReuter()` requires loading `MTKCardiacCellModels` and `ModelingToolkit` (see [MTK Integration](#mtk-integration) below).
 
 ## Interface
 
@@ -89,6 +93,8 @@ state_index(model, :v)                       # state index by name
 parameter_index(model, :GNa)                 # parameter index by name
 state_names(model)                           # tuple of all state names
 parameter_names(model)                       # tuple of all parameter names
+symbolic_system(model)                       # MTK system (MTK-backed models only)
+has_symbolic_system(model)                   # whether a symbolic system is available
 ```
 
 ## Named Access
@@ -120,6 +126,23 @@ spatial(du, u, x, t)
 ```
 
 When no spatial functions are provided, all spatial branches compile away at zero cost.
+
+## MTK Integration
+
+With [MTKCardiacCellModels](https://github.com/jClugstor/MTKCardiacCellModels) and [ModelingToolkit.jl](https://github.com/SciML/ModelingToolkit.jl) loaded, MTK-backed models become available:
+
+```julia
+using CytoZoo, MTKCardiacCellModels, ModelingToolkit, OrdinaryDiffEq
+
+model = BeelerReuter()              # 8-state Beeler-Reuter 1977 model
+prob  = ODEProblem(model, (0.0, 500.0))
+sol   = solve(prob, Tsit5())
+
+# access the symbolic system for inspection/composition
+sys = symbolic_system(model)
+```
+
+MTK-backed models implement the same interface as traditional functor models — `num_states`, `state_names`, `default_initial_state`, etc. all work identically.
 
 ## Thunderbolt Integration
 
