@@ -15,31 +15,6 @@ function _build_beeler_reuter()
     unknowns = ModelingToolkit.unknowns(sys)
     vm_sym = only(filter(u -> endswith(string(u), "φₘ(t)"), unknowns))
 
-    u0_map = Dict(u => 0.0 for u in unknowns)
-    for u in unknowns
-        s = string(u)
-        if endswith(s, "φₘ(t)")
-            u0_map[u] = -84.0
-        elseif endswith(s, "Caᵢ(t)")
-            u0_map[u] = 1e-7
-        elseif endswith(s, "m₊y(t)")
-            u0_map[u] = 0.011
-        elseif endswith(s, "h₊y(t)")
-            u0_map[u] = 0.988
-        elseif endswith(s, "j₊y(t)")
-            u0_map[u] = 0.975
-        elseif endswith(s, "d₊y(t)")
-            u0_map[u] = 0.003
-        elseif endswith(s, "f₊y(t)")
-            u0_map[u] = 0.994
-        elseif endswith(s, "gate₊y(t)")
-            u0_map[u] = 0.0001
-        end
-    end
-
-    p_map = ModelingToolkit.defaults(sys)
-    op = merge(u0_map, p_map)
-
-    prob = ODEProblem(sys, op, (0.0, 1000.0))
+    prob = ODEProblem(sys, [], (0.0, 1000.0))
     return _build_mtk_model(:BeelerReuter, sys, prob, vm_sym)
 end
