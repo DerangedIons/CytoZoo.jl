@@ -16,6 +16,11 @@ export thunderbolt_model
 function BeelerReuter end
 export BeelerReuter
 
+struct TWorldCellModel{P} <: AbstractCardiacCellModel
+    params::P
+end
+export TWorldCellModel
+
 # Models
 include("models/torord/ToRORd.jl")
 export ToRORd
