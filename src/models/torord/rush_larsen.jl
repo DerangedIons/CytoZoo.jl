@@ -1,4 +1,4 @@
-function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T}, parameters::AbstractVector{T}, celltype, x, t::T, dt::T, spatial_funcs::F) where {T, F}
+function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T}, parameters::AbstractVector, celltype, x, t, dt, spatial_funcs::F) where {T, F}
 
     # Assign states
     #hL = u[1]

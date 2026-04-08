@@ -7,10 +7,14 @@ export num_states, num_parameters, transmembrane_potential_index, default_initia
 export has_rush_larsen, rush_larsen_step!
 export state_index, parameter_index, state_names, parameter_names
 export num_monitors, monitor_values!
+export symbolic_system, has_symbolic_system
 
 # Stubs for extensions
 function thunderbolt_model end
 export thunderbolt_model
+
+function BeelerReuter end
+export BeelerReuter
 
 # Models
 include("models/torord/ToRORd.jl")

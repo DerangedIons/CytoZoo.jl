@@ -117,6 +117,25 @@ Compute derived quantities from state `u` at time `t` and store in `mon`.
 function monitor_values! end
 
 # ---------------------------------------------------------------------------
+# Optional interface — symbolic system (MTK-backed models)
+# ---------------------------------------------------------------------------
+
+"""
+    symbolic_system(model::AbstractCellModel)
+
+Return the underlying ModelingToolkit system for symbolic inspection and composition.
+Returns `nothing` for models without a symbolic representation.
+"""
+symbolic_system(::AbstractCellModel) = nothing
+
+"""
+    has_symbolic_system(model::AbstractCellModel) -> Bool
+
+Whether the model provides a symbolic MTK system via [`symbolic_system`](@ref).
+"""
+has_symbolic_system(::AbstractCellModel) = false
+
+# ---------------------------------------------------------------------------
 # Spatial wrapper
 # ---------------------------------------------------------------------------
 

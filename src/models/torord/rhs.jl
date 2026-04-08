@@ -1,7 +1,7 @@
 function _torord_rhs_impl!(
     du::AbstractVector{T},
     u::AbstractVector{T},
-    parameters::AbstractVector{T},
+    parameters::AbstractVector,
     celltype,
     x,
     t,
