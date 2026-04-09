@@ -14,7 +14,6 @@ TWorld = "7b3bcaa7-e8d1-4d64-97d9-61cb5d39b583"
 MTKCardiacCellModelsExt = ["MTKCardiacCellModels", "ModelingToolkit", "SciMLBase"]
 SciMLBaseExt = "SciMLBase"
 ThunderboltExt = "Thunderbolt"
-ThunderboltTWorldExt = ["Thunderbolt", "TWorld"]
 TWorldExt = "TWorld"
 
 [compat]

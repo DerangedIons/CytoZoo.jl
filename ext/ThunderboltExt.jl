@@ -16,26 +16,24 @@ function Thunderbolt.default_initial_state(w::CytoZooIonicModel, _)
     return CytoZoo.default_initial_state(w.model)
 end
 
-# ToRORd — typed x
 function Thunderbolt.cell_rhs!(
     du::AbstractVector{TU},
     u::AbstractVector{TU},
     x::AbstractVector{TX},
     t::TU,
-    w::CytoZooIonicModel{<:CytoZoo.ToRORd},
+    w::CytoZooIonicModel{<:CytoZoo.AbstractCellModel},
 ) where {TU, TX}
     p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
     w.model(du, u, p, t)
     return nothing
 end
 
-# ToRORd — untyped x
 function Thunderbolt.cell_rhs!(
     du::AbstractVector{TU},
     u::AbstractVector{TU},
     x,
     t::TU,
-    w::CytoZooIonicModel{<:CytoZoo.ToRORd},
+    w::CytoZooIonicModel{<:CytoZoo.AbstractCellModel},
 ) where {TU}
     p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
     w.model(du, u, p, t)
