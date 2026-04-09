@@ -58,8 +58,13 @@ end
 # Functor — DiffEq-compatible ODE RHS
 # ---------------------------------------------------------------------------
 
-function (model::ToRORd)(du, u, p, t)
+function (model::ToRORd)(du, u, ::Nothing, t)
     _torord_rhs_impl!(du, u, model.parameters, model.celltype, nothing, t, nothing)
+    return nothing
+end
+
+function (model::ToRORd)(du, u, p::SpatialContext, t)
+    _torord_rhs_impl!(du, u, model.parameters, model.celltype, p.x, t, p.spatial_funcs)
     return nothing
 end
 
@@ -69,8 +74,13 @@ end
 
 has_rush_larsen(::ToRORd) = true
 
-function rush_larsen_step!(u_new, u, t, dt, model::ToRORd)
+function rush_larsen_step!(u_new, u, ::Nothing, t, dt, model::ToRORd)
     _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, nothing, t, dt, nothing)
+    return nothing
+end
+
+function rush_larsen_step!(u_new, u, p::SpatialContext, t, dt, model::ToRORd)
+    _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, p.x, t, dt, p.spatial_funcs)
     return nothing
 end
 
@@ -81,18 +91,3 @@ parameter_index(::ToRORd, name::Symbol) = TORORD_PARAM_INDEX[name]
 state_names(::ToRORd) = TORORD_STATE_NAMES
 parameter_names(::ToRORd) = TORORD_PARAMETER_NAMES
 
-# ---------------------------------------------------------------------------
-# Spatial wrapper support
-# ---------------------------------------------------------------------------
-
-function (s::Spatial{<:ToRORd})(du, u, x, t)
-    m = s.model
-    _torord_rhs_impl!(du, u, m.parameters, m.celltype, x, t, s.spatial_funcs)
-    return nothing
-end
-
-function rush_larsen_step!(u_new, u, x, t, dt, s::Spatial{<:ToRORd})
-    m = s.model
-    _torord_rush_larsen_impl!(u_new, u, m.parameters, m.celltype, x, t, dt, s.spatial_funcs)
-    return nothing
-end

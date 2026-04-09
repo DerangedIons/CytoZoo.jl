@@ -13,7 +13,8 @@ function Thunderbolt.cell_rhs!(
     t::TU,
     w::CytoZooIonicModel{<:CytoZoo.TWorldCellModel},
 ) where {TU, TX}
-    TWorld.tworld_ode!(du, u, w.model.params, t)
+    p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
+    w.model(du, u, p, t)
     return nothing
 end
 
@@ -24,7 +25,8 @@ function Thunderbolt.cell_rhs!(
     t::TU,
     w::CytoZooIonicModel{<:CytoZoo.TWorldCellModel},
 ) where {TU}
-    TWorld.tworld_ode!(du, u, w.model.params, t)
+    p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
+    w.model(du, u, p, t)
     return nothing
 end
 

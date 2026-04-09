@@ -3,8 +3,9 @@ module ThunderboltExt
 using CytoZoo
 using Thunderbolt
 
-struct CytoZooIonicModel{M} <: Thunderbolt.AbstractIonicModel
+struct CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel
     model::M
+    spatial_funcs::SF
 end
 
 Thunderbolt.num_states(w::CytoZooIonicModel) = CytoZoo.num_states(w.model)
@@ -15,7 +16,7 @@ function Thunderbolt.default_initial_state(w::CytoZooIonicModel, _)
     return CytoZoo.default_initial_state(w.model)
 end
 
-# ToRORd without spatial functions
+# ToRORd — typed x
 function Thunderbolt.cell_rhs!(
     du::AbstractVector{TU},
     u::AbstractVector{TU},
@@ -23,11 +24,12 @@ function Thunderbolt.cell_rhs!(
     t::TU,
     w::CytoZooIonicModel{<:CytoZoo.ToRORd},
 ) where {TU, TX}
-    m = w.model
-    CytoZoo._torord_rhs_impl!(du, u, m.parameters, m.celltype, x, t, nothing)
+    p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
+    w.model(du, u, p, t)
     return nothing
 end
 
+# ToRORd — untyped x
 function Thunderbolt.cell_rhs!(
     du::AbstractVector{TU},
     u::AbstractVector{TU},
@@ -35,41 +37,12 @@ function Thunderbolt.cell_rhs!(
     t::TU,
     w::CytoZooIonicModel{<:CytoZoo.ToRORd},
 ) where {TU}
-    m = w.model
-    CytoZoo._torord_rhs_impl!(du, u, m.parameters, m.celltype, x, t, nothing)
+    p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
+    w.model(du, u, p, t)
     return nothing
 end
 
-# Spatial{ToRORd} with spatial functions
-function Thunderbolt.cell_rhs!(
-    du::AbstractVector{TU},
-    u::AbstractVector{TU},
-    x::AbstractVector{TX},
-    t::TU,
-    w::CytoZooIonicModel{<:CytoZoo.Spatial{<:CytoZoo.ToRORd}},
-) where {TU, TX}
-    m = w.model
-    CytoZoo._torord_rhs_impl!(
-        du, u, m.model.parameters, m.model.celltype, x, t, m.spatial_funcs,
-    )
-    return nothing
-end
-
-function Thunderbolt.cell_rhs!(
-    du::AbstractVector{TU},
-    u::AbstractVector{TU},
-    x,
-    t::TU,
-    w::CytoZooIonicModel{<:CytoZoo.Spatial{<:CytoZoo.ToRORd}},
-) where {TU}
-    m = w.model
-    CytoZoo._torord_rhs_impl!(
-        du, u, m.model.parameters, m.model.celltype, x, t, m.spatial_funcs,
-    )
-    return nothing
-end
-
-CytoZoo.thunderbolt_model(m::CytoZoo.AbstractCellModel) = CytoZooIonicModel(m)
-CytoZoo.thunderbolt_model(m::CytoZoo.Spatial) = CytoZooIonicModel(m)
+CytoZoo.thunderbolt_model(m::CytoZoo.AbstractCellModel; spatial_funcs=nothing) =
+    CytoZooIonicModel(m, spatial_funcs)
 
 end

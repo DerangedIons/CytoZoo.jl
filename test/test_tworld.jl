@@ -39,7 +39,7 @@ end
     u = default_initial_state(model)
     u_new = similar(u)
 
-    rush_larsen_step!(u_new, u, 0.0, 0.01, model)
+    rush_larsen_step!(u_new, u, nothing, 0.0, 0.01, model)
 
     @test !any(isnan, u_new)
     @test !any(isinf, u_new)
@@ -74,16 +74,16 @@ end
     @test parameter_index(model, :nao) isa Int
 end
 
-@testset "TWorldCellModel — DiffEq functor signature" begin
+@testset "TWorldCellModel — SpatialContext dispatch" begin
     model = TWorldCellModel()
     u = default_initial_state(model)
     du = similar(u)
 
-    model(du, u, nothing, 0.0)
-    model(du, u, :unused, 0.0)
-    model(du, u, 42, 0.0)
+    p = SpatialContext([0.5, 0.0, 0.0], nothing)
+    model(du, u, p, 0.0)
 
     @test !any(isnan, du)
+    @test !any(isinf, du)
 end
 
 @testset "TWorldCellModel — allocation measurement" begin

@@ -27,7 +27,7 @@ v_hist[1] = u[vm_idx]
 
 for i in 1:n_steps
     t = (i - 1) * dt
-    rush_larsen_step!(u_new, u, t, dt, model)
+    rush_larsen_step!(u_new, u, nothing, t, dt, model)
     u .= u_new
     t_hist[i + 1] = t + dt
     v_hist[i + 1] = u[vm_idx]

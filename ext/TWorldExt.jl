@@ -65,7 +65,13 @@ end
 # Functor — DiffEq-compatible ODE RHS
 # ---------------------------------------------------------------------------
 
-function (m::CytoZoo.TWorldCellModel)(du, u, p, t)
+function (m::CytoZoo.TWorldCellModel)(du, u, ::Nothing, t)
+    TWorld.tworld_ode!(du, u, m.params, t)
+    return nothing
+end
+
+function (m::CytoZoo.TWorldCellModel)(du, u, p::CytoZoo.SpatialContext, t)
+    # TODO: Thread p.spatial_funcs through TWorld.tworld_ode! once TWorld supports them
     TWorld.tworld_ode!(du, u, m.params, t)
     return nothing
 end
@@ -95,7 +101,14 @@ function _get_tworld_workspace(::Type{T}) where {T}
     return ws::Vector{T}
 end
 
-function CytoZoo.rush_larsen_step!(u_new, u, t, dt, m::CytoZoo.TWorldCellModel)
+function CytoZoo.rush_larsen_step!(u_new, u, ::Nothing, t, dt, m::CytoZoo.TWorldCellModel)
+    ws = _get_tworld_workspace(eltype(u))
+    TWorld.tworld_rl_step!(u_new, u, m.params, t, dt, ws)
+    return nothing
+end
+
+function CytoZoo.rush_larsen_step!(u_new, u, p::CytoZoo.SpatialContext, t, dt, m::CytoZoo.TWorldCellModel)
+    # TODO: Thread p.spatial_funcs through TWorld.tworld_rl_step! once TWorld supports them
     ws = _get_tworld_workspace(eltype(u))
     TWorld.tworld_rl_step!(u_new, u, m.params, t, dt, ws)
     return nothing

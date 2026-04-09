@@ -24,18 +24,19 @@
     @test model.celltype == 0
 end
 
-@testset "Interface compliance — Spatial{ToRORd}" begin
-    base = ToRORd()
-    spatial = Spatial(base, (
-        IKr_Multiplier = (x, t) -> 0.5,
-        isHypoxic = (x, t) -> 1.0,
-    ))
+@testset "SpatialContext" begin
+    sc = SpatialContext([1.0, 0.0, 0.0], (IKr_Multiplier = (x, t) -> 0.5,))
+    @test sc.x == [1.0, 0.0, 0.0]
+    @test sc.spatial_funcs.IKr_Multiplier([0.0], 0.0) == 0.5
 
-    @test num_states(spatial) == 65
-    @test num_parameters(spatial) == 181
-    @test transmembrane_potential_index(spatial) == 1
-    @test has_rush_larsen(spatial) == true
-    @test state_index(spatial, :v) == 1
+    sc_scalar = SpatialContext([1.0, 0.0, 0.0], (IKr_Multiplier = 0.5,))
+    @test _resolve_spatial(sc_scalar.spatial_funcs.IKr_Multiplier, [0.0], 0.0) == 0.5
+
+    sc_step = SpatialContext(
+        (1.0, 0.0, 0.0),
+        (IKr_Multiplier = SpatialStep(1, 1.5, 1.0, 0.5),),
+    )
+    @test isbitstype(typeof(sc_step))
 end
 
 @testset "Constructors" begin

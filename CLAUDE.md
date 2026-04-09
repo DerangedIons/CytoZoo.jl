@@ -25,16 +25,17 @@ julia --project=. -e "using CytoZoo; m = ToRORd(); du = similar(default_initial_
 
 Type hierarchy: `AbstractCellModel` → `AbstractCardiacCellModel` → concrete models (e.g., `ToRORd`).
 
-**Functor-first design** — no separate `cell_rhs!`. The model IS a callable struct:
+**Functor-first design** — no separate `cell_rhs!`. The model IS a callable struct that dispatches on `p`:
 ```julia
-(model::ToRORd)(du, u, p, t) -> Nothing  # p is unused; parameters live on the struct
+(model::ToRORd)(du, u, ::Nothing, t)          # non-spatial (parameters on struct)
+(model::ToRORd)(du, u, p::SpatialContext, t)   # spatial (per-cell variation via p)
 ```
 
 Required interface: functor, `num_states`, `num_parameters`, `transmembrane_potential_index`, `default_initial_state`.
 
-Optional: `has_rush_larsen`/`rush_larsen_step!`, `state_index`/`parameter_index` (Symbol-keyed Dict lookup), `monitor_values!`, `symbolic_system`/`has_symbolic_system` (MTK-backed models only).
+Optional: `has_rush_larsen`/`rush_larsen_step!` (signature: `rush_larsen_step!(u_new, u, p, t, dt, model)`), `state_index`/`parameter_index` (Symbol-keyed Dict lookup), `monitor_values!`, `symbolic_system`/`has_symbolic_system` (MTK-backed models only).
 
-`Spatial{M,F}` wrapper adds position-dependent parameter modulation via `NamedTuple` of `(x, t) -> value` functions. The internal RHS dispatches on `spatial_funcs::F` — when `F === Nothing`, all spatial branches compile away (zero overhead).
+`SpatialContext{X, SF}` carries per-cell position (`x`) and spatial parameter overrides (`spatial_funcs` NamedTuple) through the DiffEq `p` argument. Spatial functions can be scalars, callables, or isbits functors (`<: SpatialFunction`). The internal RHS uses `_resolve_spatial` to handle all three and dispatches on `spatial_funcs::F` — when `F === Nothing`, all spatial branches compile away (zero overhead). GPU-compatible when all fields are isbits.
 
 ### Model layout (src/models/torord/)
 
@@ -50,13 +51,21 @@ Parameters are stored as flat vectors on the struct for GPU compatibility. Named
 
 Naming collision avoidance in the RHS: Faraday's constant → `F_param`, temperature → `T_val`, celltype → `celltype_val` (after spatial function resolution).
 
+### Spatial context (src/spatial.jl)
+
+GPU-safe isbits spatial functor types for use with `SpatialContext`: `Constant`, `SpatialStep`, `SpatialGradient`, `PeriodicPulse`. All `<: SpatialFunction`. Users can define custom isbits callables `f(x, t) -> T` for GPU compatibility, or use closures for CPU-only simulations.
+
 ### Extensions
 
-Three package extensions, all via weak dependencies:
+Five package extensions, all via weak dependencies:
 
 **SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel`.
 
-**ThunderboltExt** (`ext/ThunderboltExt.jl`) — `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M} <: Thunderbolt.AbstractIonicModel` as an adapter. Users call `thunderbolt_model(model)` (stub in base, implemented in ext).
+**ThunderboltExt** (`ext/ThunderboltExt.jl`) — `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel` as an adapter with an optional `spatial_funcs` field. Users call `thunderbolt_model(model; spatial_funcs=nothing)` (stub in base, implemented in ext). The extension constructs `SpatialContext(x, spatial_funcs)` from the mesh position internally.
+
+**TWorldExt** (`ext/TWorldExt.jl`) — loaded when TWorld is available. Implements the full CytoZoo interface for `TWorldCellModel{P}` (92 states), including Rush-Larsen support with task-local workspace. Accepts `SpatialContext` in the functor but spatial_funcs threading to TWorld internals is pending.
+
+**ThunderboltTWorldExt** (`ext/ThunderboltTWorldExt.jl`) — loaded when both Thunderbolt and TWorld are available. Adds `cell_rhs!` overloads for `CytoZooIonicModel{<:TWorldCellModel}`, constructing `SpatialContext` from mesh position.
 
 **MTKCardiacCellModelsExt** (`ext/MTKCardiacCellModelsExt.jl`) — loaded when MTKCardiacCellModels + ModelingToolkit + SciMLBase are available. Defines `MTKCardiacModel{S,Prob} <: AbstractCardiacCellModel` which wraps an MTK-compiled `ODEProblem` and implements the full CytoZoo interface. Contains the `BeelerReuter()` model (8 states, 7 parameters) built from MTKCardiacCellModels components. The compiled model is cached per session to avoid re-compilation. MTK-backed models expose their symbolic system via `symbolic_system(model)`.
 
@@ -66,9 +75,9 @@ Three package extensions, all via weak dependencies:
 
 1. Create `src/models/<name>/` with the standard file structure
 2. Define struct `<: AbstractCardiacCellModel` with `parameters::T` and metadata fields
-3. Implement the internal `_<name>_rhs_impl!` with `spatial_funcs::F where {T, F}` dispatch
-4. Add interface methods (functor, num_states, etc.)
-5. Add `Spatial` wrapper support
+3. Implement the internal `_<name>_rhs_impl!` with `spatial_funcs::F where {T, F}` dispatch using `_resolve_spatial` for spatial parameter resolution
+4. Add interface methods (functor with `p::Nothing` and `p::SpatialContext` dispatches, num_states, etc.)
+5. Add `rush_larsen_step!` with `p` argument if applicable
 6. Include in `src/CytoZoo.jl` and export
 7. Add Thunderbolt dispatch in `ext/ThunderboltExt.jl`
 

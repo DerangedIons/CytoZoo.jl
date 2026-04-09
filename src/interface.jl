@@ -91,9 +91,10 @@ Whether the model provides a Rush-Larsen exponential integrator step.
 has_rush_larsen(::AbstractCellModel) = false
 
 """
-    rush_larsen_step!(u_new, u, t, dt, model::AbstractCellModel) -> Nothing
+    rush_larsen_step!(u_new, u, p, t, dt, model::AbstractCellModel) -> Nothing
 
-Single Rush-Larsen exponential integration step. Only available when
+Single Rush-Larsen exponential integration step. `p` is `nothing` for non-spatial
+or `SpatialContext` for per-cell spatial variation. Only available when
 `has_rush_larsen(model)` returns `true`.
 """
 function rush_larsen_step! end
@@ -136,39 +137,31 @@ Whether the model provides a symbolic MTK system via [`symbolic_system`](@ref).
 has_symbolic_system(::AbstractCellModel) = false
 
 # ---------------------------------------------------------------------------
-# Spatial wrapper
+# Spatial context — per-cell parameter variation via p
 # ---------------------------------------------------------------------------
 
 """
-    Spatial(model, spatial_funcs)
+    SpatialContext(x, spatial_funcs)
 
-Wrapper that adds position-dependent parameter modulation to any cell model.
-`spatial_funcs` is a `NamedTuple` of `(x, t) -> value` functions that override
-or modulate specific parameters based on spatial coordinates.
+Per-cell spatial context passed as the `p` argument in `model(du, u, p, t)`.
+Bundles the cell's position `x` with a `NamedTuple` of spatial parameter
+overrides (scalars, callables, or isbits functors).
 
-The base model is position-independent. This wrapper adds tissue-level spatial
-heterogeneity as an opt-in layer.
-
-# Example
-```julia
-spatial = Spatial(ToRORd(), (
-    IKr_Multiplier = (x, t) -> x[1] > 1.5 ? 0.5 : 1.0,
-    isHypoxic = (x, t) -> x[1] > 2.0 ? 1.0 : 0.0,
-))
-```
+GPU-compatible (isbits) when both `X` and every element of `SF` are isbits.
 """
-struct Spatial{M <: AbstractCellModel, F} <: AbstractCellModel
-    model::M
-    spatial_funcs::F
+struct SpatialContext{X, SF}
+    x::X
+    spatial_funcs::SF
 end
 
-num_states(s::Spatial) = num_states(s.model)
-num_parameters(s::Spatial) = num_parameters(s.model)
-transmembrane_potential_index(s::Spatial) = transmembrane_potential_index(s.model)
-default_initial_state(s::Spatial) = default_initial_state(s.model)
-has_rush_larsen(s::Spatial) = has_rush_larsen(s.model)
-state_index(s::Spatial, name::Symbol) = state_index(s.model, name)
-parameter_index(s::Spatial, name::Symbol) = parameter_index(s.model, name)
-state_names(s::Spatial) = state_names(s.model)
-parameter_names(s::Spatial) = parameter_names(s.model)
-num_monitors(s::Spatial) = num_monitors(s.model)
+@inline _resolve_spatial(v::Number, x, t) = v
+@inline _resolve_spatial(f, x, t) = f(x, t)
+
+"""
+    SpatialFunction
+
+Abstract supertype for isbits spatial functor types (e.g., `SpatialStep`,
+`PeriodicPulse`). Used for discoverability, not dispatch.
+"""
+abstract type SpatialFunction end
+

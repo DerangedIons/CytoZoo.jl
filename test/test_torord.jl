@@ -15,7 +15,7 @@ end
     u = default_initial_state(model)
     u_new = similar(u)
 
-    rush_larsen_step!(u_new, u, 0.0, 0.01, model)
+    rush_larsen_step!(u_new, u, nothing, 0.0, 0.01, model)
 
     @test !any(isnan, u_new)
     @test !any(isinf, u_new)
@@ -46,33 +46,44 @@ end
     @test alloc == 0
 end
 
-@testset "ToRORd — DiffEq functor signature" begin
+@testset "ToRORd — SpatialContext evaluation" begin
     model = ToRORd()
     u = default_initial_state(model)
     du = similar(u)
-
-    # Should work with any p (ignored)
-    model(du, u, nothing, 0.0)
-    model(du, u, :unused, 0.0)
-    model(du, u, 42, 0.0)
-
-    @test !any(isnan, du)
-end
-
-@testset "ToRORd — Spatial wrapper evaluation" begin
-    base = ToRORd()
-    spatial = Spatial(base, (
+    p = SpatialContext([0.5, 0.0, 0.0], (
         IKr_Multiplier = (x, t) -> 0.5,
         isHypoxic = (x, t) -> 0.0,
         celltype = (x, t) -> 0.0,
     ))
 
-    u = default_initial_state(spatial)
-    du = similar(u)
-    x = [0.5, 0.0, 0.0]
-
-    spatial(du, u, x, 0.0)
+    model(du, u, p, 0.0)
 
     @test !any(isnan, du)
     @test !any(isinf, du)
+end
+
+@testset "ToRORd — SpatialContext with scalar overrides" begin
+    model = ToRORd()
+    u = default_initial_state(model)
+    du = similar(u)
+    p = SpatialContext([0.5, 0.0, 0.0], (IKr_Multiplier = 0.5,))
+
+    model(du, u, p, 0.0)
+
+    @test !any(isnan, du)
+    @test !any(isinf, du)
+end
+
+@testset "ToRORd — Rush-Larsen with SpatialContext" begin
+    model = ToRORd()
+    u = default_initial_state(model)
+    u_new = similar(u)
+    p = SpatialContext([0.5, 0.0, 0.0], (
+        IKr_Multiplier = (x, t) -> 0.5,
+    ))
+
+    rush_larsen_step!(u_new, u, p, 0.0, 0.01, model)
+
+    @test !any(isnan, u_new)
+    @test !any(isinf, u_new)
 end

@@ -18,7 +18,7 @@ A Julia package providing a registry of cardiac cell models with a common functo
 - Dual-backend — hand-coded functor models and MTK symbolic models behind the same interface
 - Functor interface — models are callable structs compatible with DifferentialEquations.jl
 - Rush-Larsen exponential integrator support
-- Spatial heterogeneity via the `Spatial` wrapper (zero overhead when unused)
+- Spatial heterogeneity via `SpatialContext` in the DiffEq `p` argument (zero overhead when unused)
 - GPU-friendly design (flat parameter vectors, generic element types)
 
 ## Installation
@@ -53,7 +53,7 @@ sol  = solve(prob, Tsit5())
 
 ```julia
 u_new = similar(u)
-rush_larsen_step!(u_new, u, 0.0, 0.01, model)
+rush_larsen_step!(u_new, u, nothing, 0.0, 0.01, model)
 ```
 
 ## Available Models
@@ -61,6 +61,7 @@ rush_larsen_step!(u_new, u, 0.0, 0.01, model)
 | Model | States | Parameters | Cell types | Rush-Larsen | Backend |
 |-------|--------|------------|------------|-------------|---------|
 | `ToRORd` | 65 | 181 | endocardial (0), epicardial (1), midmyocardial (2) | yes | functor |
+| `TWorldCellModel` | 92 | varies | endocardial (0), epicardial (1), midmyocardial (2) | yes | functor (ext) |
 | `BeelerReuter` | 8 | 7 | — | no | MTK |
 
 ```julia
@@ -88,7 +89,7 @@ Optional:
 
 ```julia
 has_rush_larsen(model)                       # whether Rush-Larsen is available
-rush_larsen_step!(u_new, u, t, dt, model)    # exponential integrator step
+rush_larsen_step!(u_new, u, p, t, dt, model)  # exponential integrator step
 state_index(model, :v)                       # state index by name
 parameter_index(model, :GNa)                 # parameter index by name
 state_names(model)                           # tuple of all state names
@@ -113,19 +114,35 @@ model.parameters[gi] = 11.0
 
 ## Spatial Heterogeneity
 
-The `Spatial` wrapper adds position-dependent parameter modulation to any model. Provide a `NamedTuple` of `(x, t) -> value` functions keyed by parameter name:
+`SpatialContext` carries per-cell position and spatial parameter overrides through the DiffEq `p` argument:
 
 ```julia
-spatial = Spatial(ToRORd(), (
+model = ToRORd()
+u = default_initial_state(model)
+du = similar(u)
+
+p = SpatialContext([1.2, 0.5, 1.8], (
     IKr_Multiplier = (x, t) -> x[1] > 1.5 ? 0.5 : 1.0,
     isHypoxic      = (x, t) -> x[3] > 2.0 ? 1.0 : 0.0,
 ))
 
-x = [1.2, 0.5, 1.8]   # spatial coordinates
-spatial(du, u, x, t)
+model(du, u, p, 0.0)
 ```
 
-When no spatial functions are provided, all spatial branches compile away at zero cost.
+Spatial functions can be scalars (`0.5`), closures (`(x, t) -> ...`), or GPU-safe isbits functors:
+
+```julia
+using StaticArrays
+
+p = SpatialContext(
+    SVector(1.2, 0.5, 1.8),
+    (IKr_Multiplier = SpatialStep(1, 1.5, 1.0, 0.5),  # step at x[1] = 1.5
+     stim = PeriodicPulse(-53.0, 1000.0, 1.0, 0.0)),   # periodic stimulus
+)
+isbitstype(typeof(p))  # true — GPU compatible
+```
+
+When `p = nothing`, all spatial branches compile away at zero cost.
 
 ## MTK Integration
 
@@ -154,6 +171,8 @@ using CytoZoo, Thunderbolt
 model = ToRORd()
 ionic = thunderbolt_model(model)    # CytoZooIonicModel wrapper
 # use `ionic` with Thunderbolt.MonodomainModel(...)
-```
 
-This also works with `Spatial`-wrapped models.
+# With spatial functions — Thunderbolt provides x from the mesh automatically
+spatial_funcs = (IKr_Multiplier = (x, t) -> x[1] > 2.0 ? 0.5 : 1.0,)
+ionic = thunderbolt_model(model; spatial_funcs)
+```
