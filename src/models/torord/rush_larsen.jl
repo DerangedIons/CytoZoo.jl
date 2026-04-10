@@ -96,7 +96,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     IClb_Multiplier = parameters[24]
     IK1_Multiplier = parameters[25]
     IKb_Multiplier = parameters[26]
-    IKr_Multiplier_spatial = F !== Nothing ? T(spatial_funcs.IKr_Multiplier(x, t)) : one(T)
+    IKr_Multiplier_spatial = F !== Nothing && hasproperty(spatial_funcs, :IKr_Multiplier) ? T(_resolve_spatial(spatial_funcs.IKr_Multiplier, x, t)) : one(T)
     IKr_Multiplier = IKr_Multiplier_spatial * parameters[27]
     IKs_Multiplier = parameters[28]
     INaCa_Multiplier = parameters[29]
@@ -148,7 +148,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     Q10SRCaP = parameters[75]
     R = parameters[76]
     T_base = parameters[77]
-    T_val = F !== Nothing && hasproperty(spatial_funcs, :T) ? T(spatial_funcs.T(x, t)) : T_base
+    T_val = F !== Nothing && hasproperty(spatial_funcs, :T) ? T(_resolve_spatial(spatial_funcs.T, x, t)) : T_base
     TOT_A = parameters[78]
     TRPN_n = parameters[79]
     Tref_b = parameters[80]
@@ -163,7 +163,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     ca50_b = parameters[89]
     cajsr_half = parameters[90]
     cao = parameters[91]
-    celltype_val = F !== Nothing ? T(spatial_funcs.celltype(x, t)) : T(celltype)
+    celltype_val = F !== Nothing && hasproperty(spatial_funcs, :celltype) ? T(_resolve_spatial(spatial_funcs.celltype, x, t)) : T(celltype)
     clo = parameters[93]
     cmdnmax_b = parameters[94]
     csqnmax = parameters[95]
@@ -181,12 +181,11 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     fTnIP = parameters[107]
     gamma = parameters[108]
     gamma_wu = parameters[109]
-    i_Stim_Amplitude = F !== Nothing && hasproperty(spatial_funcs, :stim) ? T(spatial_funcs.stim(x, t)) : parameters[110]
+    i_Stim_Amplitude = F !== Nothing && hasproperty(spatial_funcs, :stim) ? T(_resolve_spatial(spatial_funcs.stim, x, t)) : parameters[110]
     i_Stim_Period = parameters[111]
     i_Stim_PulseDuration = parameters[112]
     i_Stim_Start = parameters[113]
-    isHypoxic = F !== Nothing ? T(spatial_funcs.isHypoxic(x, t)) : zero(T)
-    celltype_val = F !== Nothing ? T(spatial_funcs.celltype(x, t)) : T(celltype)
+    isHypoxic = F !== Nothing && hasproperty(spatial_funcs, :isHypoxic) ? T(_resolve_spatial(spatial_funcs.isHypoxic, x, t)) : zero(T)
     jsrMidpoint = parameters[115]
     k1m = parameters[116]
     k1p = parameters[117]
@@ -227,7 +226,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     nup = parameters[152]
     offset = parameters[153]
     pH_base = parameters[154]
-    pH = F !== Nothing && hasproperty(spatial_funcs, :pH) ? T(spatial_funcs.pH(x, t)) : pH_base
+    pH = F !== Nothing && hasproperty(spatial_funcs, :pH) ? T(_resolve_spatial(spatial_funcs.pH, x, t)) : pH_base
     perm50 = parameters[155]
     ph_bt = parameters[156]
     phi = parameters[157]

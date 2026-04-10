@@ -11,4 +11,9 @@ using Test
     else
         @warn "MTKCardiacCellModels not available, skipping MTK extension tests"
     end
+    if Base.find_package("TWorld") !== nothing
+        include("test_tworld.jl")
+    else
+        @warn "TWorld not available, skipping TWorld extension tests"
+    end
 end

@@ -103,8 +103,8 @@ function _torord_rhs_impl!(
     IClb_Multiplier = parameters[24]
     IK1_Multiplier = parameters[25]
     IKb_Multiplier = parameters[26]
-    IKr_Multiplier_spatial = if F !== Nothing
-        T(spatial_funcs.IKr_Multiplier(x, t))
+    IKr_Multiplier_spatial = if F !== Nothing && hasproperty(spatial_funcs, :IKr_Multiplier)
+        T(_resolve_spatial(spatial_funcs.IKr_Multiplier, x, t))
     else
         one(T)
     end
@@ -160,7 +160,7 @@ function _torord_rhs_impl!(
     R = parameters[76]
     T_base = parameters[77]
     T_val = if F !== Nothing && hasproperty(spatial_funcs, :T)
-        T(spatial_funcs.T(x, t))
+        T(_resolve_spatial(spatial_funcs.T, x, t))
     else
         T_base
     end
@@ -197,7 +197,7 @@ function _torord_rhs_impl!(
     gamma = parameters[108]
     gamma_wu = parameters[109]
     i_Stim_Amplitude = if F !== Nothing && hasproperty(spatial_funcs, :stim)
-        T(spatial_funcs.stim(x, t))
+        T(_resolve_spatial(spatial_funcs.stim, x, t))
     else
         T(parameters[110])
     end
@@ -205,12 +205,12 @@ function _torord_rhs_impl!(
     i_Stim_PulseDuration = parameters[112]
     i_Stim_Start = parameters[113]
     isHypoxic = if F !== Nothing && hasproperty(spatial_funcs, :isHypoxic)
-        T(spatial_funcs.isHypoxic(x, t))
+        T(_resolve_spatial(spatial_funcs.isHypoxic, x, t))
     else
         zero(T)
     end
     celltype_val = if F !== Nothing && hasproperty(spatial_funcs, :celltype)
-        T(spatial_funcs.celltype(x, t))
+        T(_resolve_spatial(spatial_funcs.celltype, x, t))
     else
         T(celltype)
     end
@@ -255,7 +255,7 @@ function _torord_rhs_impl!(
     offset = parameters[153]
     pH_base = parameters[154]
     pH = if F !== Nothing && hasproperty(spatial_funcs, :pH)
-        T(spatial_funcs.pH(x, t))
+        T(_resolve_spatial(spatial_funcs.pH, x, t))
     else
         pH_base
     end
