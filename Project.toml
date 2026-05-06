@@ -17,9 +17,10 @@ ThunderboltExt = "Thunderbolt"
 TWorldExt = "TWorld"
 
 [compat]
-ModelingToolkit = "11.24.1"
-SciMLBase = "3.7.1"
+ModelingToolkit = "11.24"
+SciMLBase = "3.7"
 julia = "1.10"
+
 [extras]
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
