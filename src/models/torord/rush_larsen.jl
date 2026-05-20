@@ -181,7 +181,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     fTnIP = parameters[107]
     gamma = parameters[108]
     gamma_wu = parameters[109]
-    i_Stim_Amplitude = F !== Nothing && hasproperty(spatial_funcs, :stim) ? T(_resolve_spatial(spatial_funcs.stim, x, t)) : parameters[110]
+    i_Stim_Amplitude = F !== Nothing && hasproperty(spatial_funcs, :stim) ? T(_resolve_spatial(spatial_funcs.stim, x, t)) : T(parameters[110])
     i_Stim_Period = parameters[111]
     i_Stim_PulseDuration = parameters[112]
     i_Stim_Start = parameters[113]
