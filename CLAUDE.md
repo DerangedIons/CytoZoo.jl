@@ -55,15 +55,25 @@ Naming collision avoidance in the RHS: Faraday's constant → `F_param`, tempera
 
 GPU-safe isbits spatial functor types for use with `SpatialContext`: `Constant`, `SpatialStep`, `SpatialGradient`, `PeriodicPulse`. All `<: SpatialFunction`. Users can define custom isbits callables `f(x, t) -> T` for GPU compatibility, or use closures for CPU-only simulations.
 
+### Native adherence vs. ext fallback
+
+Two integration patterns for model packages:
+
+1. **Native adherence (packages we own)** — the model package depends on CytoZoo and declares its types as `<: CytoZoo.AbstractCardiacCellModel`, implementing the interface methods inside the model package. Reference example: `DerangedIons/TWorld.jl` defines `TWorldCellModel{P} <: CytoZoo.AbstractCardiacCellModel` in `src/cytozoo_interface.jl` and exports it. User writes `using TWorld` and gets the CytoZoo interface for free; `using CytoZoo, TWorld, OtherModel` lets them hot-swap behind a uniform interface.
+
+2. **Ext fallback (third-party packages)** — when the upstream package can't take a CytoZoo dependency, CytoZoo writes a thin adapter in `ext/<Pkg>Ext.jl` that wraps the upstream type and implements the interface. The current `ThunderboltExt.jl` is the canonical example.
+
 ### Extensions
 
-Three package extensions, all via weak dependencies:
+Two package extensions:
 
 **SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel`.
 
-**ThunderboltExt** (`ext/ThunderboltExt.jl`) — `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel` as an adapter with an optional `spatial_funcs` field. Users call `thunderbolt_model(model; spatial_funcs=nothing)` (stub in base, implemented in ext). The extension constructs `SpatialContext(x, spatial_funcs)` from the mesh position internally.
+**ThunderboltExt** (`ext/ThunderboltExt.jl`) — Thunderbolt's `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel` as an adapter with an optional `spatial_funcs` field. Users call `thunderbolt_model(model; spatial_funcs=nothing)` (stub in base, implemented in ext). The extension constructs `SpatialContext(x, spatial_funcs)` from the mesh position internally.
 
-**TWorldExt** (`ext/TWorldExt.jl`) — loaded when TWorld is available. Implements the full CytoZoo interface for `TWorldCellModel{P}` (92 states), including Rush-Larsen support with task-local workspace. Accepts `SpatialContext` in the functor but spatial_funcs threading to TWorld internals is pending.
+### Stimulus
+
+`Stimulus{F}` is a callable wrapper for a time-only stimulus current; `StimulusParametric{T}` is a closure-free isbits struct (amplitude/period/duration/start) for GPU and Rush-Larsen contexts. `stim_eval(s, x, y, z, t)` is the single entrypoint used by every model (positions ignored by the base types — spatial modulation is layered via `SpatialContext`). Both are owned by CytoZoo and re-exported by model packages that adhere natively (e.g., TWorld).
 
 ### Adding a new model
 
@@ -73,8 +83,7 @@ Three package extensions, all via weak dependencies:
 4. Add interface methods (functor with `p::Nothing` and `p::SpatialContext` dispatches, num_states, etc.)
 5. Add `rush_larsen_step!` with `p` argument if applicable
 6. Include in `src/CytoZoo.jl` and export
-7. Add Thunderbolt dispatch in `ext/ThunderboltExt.jl`
 
 ### Testing
 
-Correctness tests compare CytoZoo output against ArmyHeart reference values (embedded in `test/test_torord_correctness.jl`) at `rtol=1e-10`. Performance tests verify zero allocations on the functor. SciMLBase extension tests verify `ODEProblem(model, tspan)` + `solve`. TWorld extension tests are conditional — skipped when TWorld is unavailable. Source models for cross-validation live at `~/dev/ArmyHeart/` and `~/.julia/dev/TWorld/`.
+Correctness tests compare CytoZoo output against ArmyHeart reference values (embedded in `test/test_torord_correctness.jl`) at `rtol=1e-10`. Performance tests verify zero allocations on the functor. SciMLBase extension tests verify `ODEProblem(model, tspan)` + `solve`. TWorld tests are conditional — skipped when TWorld is unavailable; they exercise the native-adherence path (`using TWorld` exposes `TWorldCellModel`). Source models for cross-validation live at `~/dev/ArmyHeart/` and `~/dev/TWorld/`.
