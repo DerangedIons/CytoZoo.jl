@@ -40,20 +40,3 @@ end
     frac = clamp((x[f.dim] - f.x_start) / (f.x_end - f.x_start), zero(f.val_start), one(f.val_start))
     return f.val_start + frac * (f.val_end - f.val_start)
 end
-
-"""
-    PeriodicPulse(amplitude, period, duration, start)
-
-Time-periodic rectangular pulse. Returns `amplitude` for `duration` time units
-every `period`, starting at time `start`. Zero otherwise.
-"""
-struct PeriodicPulse{T} <: SpatialFunction
-    amplitude::T
-    period::T
-    duration::T
-    start::T
-end
-@inline function (f::PeriodicPulse)(x, t)
-    rem = mod(t - f.start, f.period)
-    return ifelse(rem < f.duration, f.amplitude, zero(f.amplitude))
-end

@@ -445,11 +445,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
         (isHypoxic == T(1)) ? (T(0.9) * INa_Multiplier) : (INa_Multiplier)
     )
     Iss = (T(0.5) * (T(4.0) * cass + (clss + (kss + nass)))) / T(1000.0)
-    Istim = if F !== Nothing && hasproperty(spatial_funcs, :stim)
-        T(_resolve_spatial(spatial_funcs.stim, x, t))
-    else
-        T(stim_eval(stim, x, x, x, t))
-    end
+    Istim = T(stim(x, t))
     Jdiff = (-cai + cass) ./ tauCa
     JdiffCl = (-cli + clss) ./ tauNa
     JdiffNa = (-nai + nass) ./ tauNa

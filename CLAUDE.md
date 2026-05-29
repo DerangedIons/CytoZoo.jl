@@ -12,8 +12,8 @@ A Julia package providing a registry of cardiac cell models with a common functo
 # Run tests
 julia --project=. -e "using Pkg; Pkg.test()"
 
-# Format (Blue style)
-julia --project=. -e "using JuliaFormatter; format(\"src\")"
+# Format (Runic) — install once: julia -e 'using Pkg; Pkg.Apps.add("Runic")'
+runic --inplace src test          # or: julia -m Runic --inplace src test
 
 # Load and quick-test
 julia --project=. -e "using CytoZoo; m = ToRORd(); du = similar(default_initial_state(m)); m(du, default_initial_state(m), nothing, 0.0); println(du[1])"
@@ -53,7 +53,7 @@ Naming collision avoidance in the RHS: Faraday's constant → `F_param`, tempera
 
 ### Spatial context (src/spatial.jl)
 
-GPU-safe isbits spatial functor types for use with `SpatialContext`: `Constant`, `SpatialStep`, `SpatialGradient`, `PeriodicPulse`. All `<: SpatialFunction`. Users can define custom isbits callables `f(x, t) -> T` for GPU compatibility, or use closures for CPU-only simulations.
+GPU-safe isbits spatial functor types for use with `SpatialContext`: `Constant`, `SpatialStep`, `SpatialGradient`. All `<: SpatialFunction`. Users can define custom isbits callables `f(x, t) -> T` for GPU compatibility, or use closures for CPU-only simulations.
 
 ### Native adherence vs. ext fallback
 
@@ -73,7 +73,7 @@ Two package extensions:
 
 ### Stimulus
 
-`Stimulus{F}` is a callable wrapper for a time-only stimulus current; `StimulusParametric{T}` is a closure-free isbits struct (amplitude/period/duration/start) for GPU and Rush-Larsen contexts. `stim_eval(s, x, y, z, t)` is the single entrypoint used by every model (positions ignored by the base types — spatial modulation is layered via `SpatialContext`). Both are owned by CytoZoo and re-exported by model packages that adhere natively (e.g., TWorld).
+`AbstractStimulus` (interface.jl) is the supertype for stimulus current models; the contract is a callable `(s)(x, t) -> current` returning the full `Istim`. `x` is a position vector (matching `SpatialFunction`); a stimulus used on the non-spatial path must ignore `x` so `s(nothing, t)` works. Spatial dependence is first-class — a stimulus may index `x`. Built-ins: `Stimulus{T}` (closure-free isbits periodic pulse — amplitude/period/duration/start — for GPU and Rush-Larsen) and `FunctionStimulus{F}` (wraps an arbitrary `(x, t)` function for biphasic/S1–S2/ramps; isbits iff `F` is). Models call `stim(x, t)` directly. All are owned by CytoZoo and re-exported by model packages that adhere natively (e.g., TWorld).
 
 ### Adding a new model
 

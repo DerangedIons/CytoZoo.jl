@@ -136,13 +136,22 @@ using StaticArrays
 
 p = SpatialContext(
     SVector(1.2, 0.5, 1.8),
-    (IKr_Multiplier = SpatialStep(1, 1.5, 1.0, 0.5),  # step at x[1] = 1.5
-     stim = PeriodicPulse(-53.0, 1000.0, 1.0, 0.0)),   # periodic stimulus
+    (IKr_Multiplier = SpatialStep(1, 1.5, 1.0, 0.5),),  # step at x[1] = 1.5
 )
 isbitstype(typeof(p))  # true — GPU compatible
 ```
 
 When `p = nothing`, all spatial branches compile away at zero cost.
+
+The stimulus current is configured on the model, not through `spatial_funcs`. It
+is evaluated as `stim(x, t)`, so a position-dependent stimulus is first-class —
+pass a `FunctionStimulus` or a custom `AbstractStimulus` subtype:
+
+```julia
+# Periodic pulse that fires only where x[1] > 1.5
+local_stim = FunctionStimulus((x, t) -> (mod(t, 1000.0) < 1.0 && x[1] > 1.5) ? -53.0 : 0.0)
+model = ToRORd(; stim = local_stim)
+```
 
 ## MTK Integration
 

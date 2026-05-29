@@ -22,10 +22,10 @@ ToRORd(; stim = Stimulus(; amplitude = -40.0, period = 500.0))  # custom stimulu
 
 Cell types: `0` = endocardial, `1` = epicardial, `2` = midmyocardial.
 
-The `stim` field is the canonical time-only stimulus (default: -53 mV, period
-1000 ms, 1 ms duration). Per-cell variation is layered on via
-`SpatialContext(x, (stim = (x, t) -> ...,))` — the spatial override returns
-the full `Istim` value (not a multiplier).
+The `stim` field is an `AbstractStimulus` (default: -53 mV, period 1000 ms,
+1 ms duration). It is evaluated as `stim(x, t)` and returns the full `Istim`.
+For arbitrary or position-dependent waveforms, pass a `FunctionStimulus` or a
+custom `AbstractStimulus` subtype.
 """
 struct ToRORd{T <: AbstractVector, S} <: AbstractCardiacCellModel
     parameters::T

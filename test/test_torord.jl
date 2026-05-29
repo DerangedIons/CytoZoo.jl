@@ -12,7 +12,7 @@ end
 
 @testset "ToRORd — custom stimulus" begin
     # Constant zero stim → dVm/dt at rest matches the default-stim "off" phase
-    model_off = ToRORd(; stim = Stimulus(t -> 0.0))
+    model_off = ToRORd(; stim = FunctionStimulus((x, t) -> 0.0))
     model_default = ToRORd()
     u = default_initial_state(model_default)
 

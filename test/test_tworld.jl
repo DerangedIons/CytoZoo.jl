@@ -91,11 +91,10 @@ end
     @info "TWorldCellModel functor allocations: $alloc bytes"
 end
 
-@testset "Stimulus / StimulusParametric — exported by both packages" begin
-    # Both CytoZoo and TWorld expose the same Stimulus and StimulusParametric
-    # types (CytoZoo owns them; TWorld re-exports). Identity check confirms
-    # no shadowing.
+@testset "Stimulus — exported by both packages" begin
+    # Both CytoZoo and TWorld expose the same stimulus types (CytoZoo owns them;
+    # TWorld re-exports). Identity check confirms no shadowing.
+    @test TWorld.AbstractStimulus === CytoZoo.AbstractStimulus
     @test TWorld.Stimulus === CytoZoo.Stimulus
-    @test TWorld.StimulusParametric === CytoZoo.StimulusParametric
-    @test TWorld.stim_eval === CytoZoo.stim_eval
+    @test TWorld.FunctionStimulus === CytoZoo.FunctionStimulus
 end

@@ -142,7 +142,20 @@ end
     SpatialFunction
 
 Abstract supertype for isbits spatial functor types (e.g., `SpatialStep`,
-`PeriodicPulse`). Used for discoverability, not dispatch.
+`SpatialGradient`). Used for discoverability, not dispatch.
 """
 abstract type SpatialFunction end
+
+"""
+    AbstractStimulus
+
+Supertype for stimulus current models. A subtype must be callable as
+`(s::AbstractStimulus)(x, t)` and return the stimulus current directly, where
+`x` is a position vector (matching `SpatialFunction`) and `t` is time.
+
+A stimulus used on the non-spatial path (`model(du, u, nothing, t)`) must be
+position-independent — it must not dereference `x`, so that `s(nothing, t)`
+works. Subtypes that index `x` are only valid under a `SpatialContext`.
+"""
+abstract type AbstractStimulus end
 
