@@ -12,7 +12,7 @@ SciMLBaseExt = "SciMLBase"
 ThunderboltExt = "Thunderbolt"
 
 [compat]
-SciMLBase = "2"
+SciMLBase = "2, 3"
 julia = "1.10"
 
 [extras]
