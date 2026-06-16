@@ -84,3 +84,51 @@ CytoZoo.parameter_index(::_RefRecv, n::Symbol) = n === :Vm_ext ? 1 : nothing
     @test integ.u[state_index(cm, :B_z)] ≈ 2.0 rtol = 1e-6  # z = ∫ Vm dt = 2·1, Vm constant 2
     @test recv.parameters[1] ≈ 2.0                          # synchronizer wrote Vm into the receiver param
 end
+
+# Convergence toy: A's `a` decays (a = exp(-t)); B integrates it via a cross-ref. The exact
+# b(1) = ∫₀¹ exp(-t) dt = 1 - exp(-1). Splitting freezes `a` per step ⇒ O(dt) (1st-order) error.
+struct _ConvA <: CytoZoo.AbstractCellModel end
+CytoZoo.num_states(::_ConvA) = 1
+CytoZoo.state_names(::_ConvA) = (:a,)
+CytoZoo.default_initial_state(::_ConvA) = [1.0]
+CytoZoo.state_index(::_ConvA, n::Symbol) = findfirst(==(n), (:a,))
+CytoZoo.transmembrane_potential_index(::_ConvA) = 1
+(::_ConvA)(du, u, p, t) = (du[1] = -u[1]; nothing)
+
+struct _ConvB <: CytoZoo.AbstractCellModel
+    parameters::Vector{Float64}
+end
+_ConvB() = _ConvB([0.0])
+CytoZoo.num_states(::_ConvB) = 1
+CytoZoo.state_names(::_ConvB) = (:b,)
+CytoZoo.default_initial_state(::_ConvB) = [0.0]
+CytoZoo.state_index(::_ConvB, n::Symbol) = findfirst(==(n), (:b,))
+CytoZoo.transmembrane_potential_index(::_ConvB) = 1
+CytoZoo.parameter_index(::_ConvB, n::Symbol) = n === :a_in ? 1 : nothing
+(m::_ConvB)(du, u, p, t) = (du[1] = m.parameters[1]; nothing)
+
+@testset "CouplingExt — LT-G shows ~1st-order convergence" begin
+    function solve_b(dt)
+        cm = couple((A = _ConvA(), B = _ConvB()); refs = [crossref(:A => :a, :B => :a_in)])
+        integ = init(OperatorSplittingProblem(cm, (0.0, 1.0)), coupled_algorithm(cm, Tsit5()); dt = dt, adaptive = false)
+        solve!(integ)
+        return integ.u[state_index(cm, :B_b)]
+    end
+    exact = 1.0 - exp(-1.0)
+    e1, e2, e3 = abs(solve_b(0.1) - exact), abs(solve_b(0.05) - exact), abs(solve_b(0.025) - exact)
+    @test e1 > e2 > e3                       # error shrinks with dt
+    @test 1.7 < e1 / e2 < 2.3                # halving dt ≈ halves error (1st order)
+    @test 1.7 < e2 / e3 < 2.3
+end
+
+@testset "CouplingExt — operators allocate nothing in the hot path" begin
+    cm = couple((A = _ExtToyA(), B = _ExtToyB()); aliases = [alias(:A => :d, :B => :x; owner = :A)])
+    gsf = build_split_function(cm)
+    for (i, ck) in enumerate(cm.layout.operator_order)
+        op = gsf.functions[i].f                  # the ComponentOperator inside the ODEFunction
+        n = num_states(cm.components[ck])
+        du, u = zeros(n), ones(n)
+        op(du, u, nothing, 0.0)                  # warmup
+        @test @allocated(op(du, u, nothing, 0.0)) == 0
+    end
+end
