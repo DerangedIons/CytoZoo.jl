@@ -270,3 +270,22 @@ transmembrane_potential_index(cm::CoupledModel) = cm.layout.vm_index
 num_parameters(::CoupledModel) = throw(
     ArgumentError("CoupledModel has no single parameter vector; parameters live on each component")
 )
+
+# Solving entry points — methods are added in ext/CouplingExt.jl, which requires
+# OrdinaryDiffEqOperatorSplitting to be loaded.
+"""
+    build_split_function(cm::CoupledModel)
+
+Build the `GenericSplitFunction` (operators in owner-last order, with the global
+`solution_indices`) for `cm`. Requires `OrdinaryDiffEqOperatorSplitting`.
+"""
+function build_split_function end
+
+"""
+    coupled_algorithm(cm::CoupledModel, inner; scheme = LieTrotterGodunov)
+
+Build a splitting algorithm whose inner solvers are ordered to match `cm`'s internal
+operator order. `inner` is one solver applied to every component, or a `NamedTuple` of
+per-component solvers. Requires `OrdinaryDiffEqOperatorSplitting`.
+"""
+function coupled_algorithm end
