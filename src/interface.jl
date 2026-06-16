@@ -119,20 +119,22 @@ or `SpatialContext` for per-cell spatial variation. Only available when
 function rush_larsen_step! end
 
 # ---------------------------------------------------------------------------
-# Optional interface — monitors
+# Internal — monitors (unexported; no model implements these yet)
 # ---------------------------------------------------------------------------
 
 """
     num_monitors(model::AbstractCellModel) -> Int
 
-Number of derived/monitored quantities the model can compute.
+Number of derived/monitored quantities the model can compute. Internal hook —
+not exported until a model ships a real `monitor_values!` implementation.
 """
 num_monitors(::AbstractCellModel) = 0
 
 """
     monitor_values!(mon, u, t, model::AbstractCellModel) -> Nothing
 
-Compute derived quantities from state `u` at time `t` and store in `mon`.
+Compute derived quantities from state `u` at time `t` and store in `mon`. Internal
+hook — not exported until a model implements it.
 """
 function monitor_values! end
 
@@ -141,7 +143,7 @@ function monitor_values! end
 # ---------------------------------------------------------------------------
 
 """
-    SpatialContext(x, spatial_funcs)
+    SpatialContext(x, overrides)
 
 Per-cell spatial context passed as the `p` argument in `model(du, u, p, t)`.
 Bundles the cell's position `x` with a `NamedTuple` of spatial parameter
@@ -151,7 +153,7 @@ GPU-compatible (isbits) when both `X` and every element of `SF` are isbits.
 """
 struct SpatialContext{X, SF}
     x::X
-    spatial_funcs::SF
+    overrides::SF
 end
 
 @inline _resolve_spatial(v::Number, x, t) = v

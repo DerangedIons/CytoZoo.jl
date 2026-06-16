@@ -28,10 +28,10 @@ end
 @testset "SpatialContext" begin
     sc = SpatialContext([1.0, 0.0, 0.0], (IKr_Multiplier = (x, t) -> 0.5,))
     @test sc.x == [1.0, 0.0, 0.0]
-    @test sc.spatial_funcs.IKr_Multiplier([0.0], 0.0) == 0.5
+    @test sc.overrides.IKr_Multiplier([0.0], 0.0) == 0.5
 
     sc_scalar = SpatialContext([1.0, 0.0, 0.0], (IKr_Multiplier = 0.5,))
-    @test CytoZoo._resolve_spatial(sc_scalar.spatial_funcs.IKr_Multiplier, [0.0], 0.0) == 0.5
+    @test CytoZoo._resolve_spatial(sc_scalar.overrides.IKr_Multiplier, [0.0], 0.0) == 0.5
 
     sc_step = SpatialContext(
         (1.0, 0.0, 0.0),

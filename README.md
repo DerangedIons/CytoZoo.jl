@@ -138,7 +138,7 @@ isbitstype(typeof(p))  # true — GPU compatible
 
 When `p = nothing`, all spatial branches compile away at zero cost.
 
-The stimulus current is configured on the model, not through `spatial_funcs`. It
+The stimulus current is configured on the model, not through `overrides`. It
 is evaluated as `stim(x, t)`, so a position-dependent stimulus is first-class —
 pass a `FunctionStimulus` or a custom `AbstractStimulus` subtype:
 
@@ -160,6 +160,6 @@ ionic = thunderbolt_model(model)    # CytoZooIonicModel wrapper
 # use `ionic` with Thunderbolt.MonodomainModel(...)
 
 # With spatial functions — Thunderbolt provides x from the mesh automatically
-spatial_funcs = (IKr_Multiplier = (x, t) -> x[1] > 2.0 ? 0.5 : 1.0,)
-ionic = thunderbolt_model(model; spatial_funcs)
+overrides = (IKr_Multiplier = (x, t) -> x[1] > 2.0 ? 0.5 : 1.0,)
+ionic = thunderbolt_model(model; overrides)
 ```
