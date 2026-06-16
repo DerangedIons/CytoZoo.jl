@@ -5,39 +5,46 @@ include("rush_larsen.jl")
 include("monitors.jl")
 
 """
-    ToRORd{T}
+    ToRORd{T, S}
 
-ToRORd trauma-hetero cardiac cell model (65 states, 181 parameters).
+ToRORd trauma-hetero cardiac cell model (65 states, 177 parameters).
 
 A modified O'Hara-Rudy model with mechanical coupling, trauma/hypoxia effects,
 and cellular heterogeneity (endo/mid/epi).
 
 # Constructor
 ```julia
-ToRORd()                        # Float64, endocardial
-ToRORd(Float32; celltype=1)     # Float32, epicardial
-ToRORd(Vector{Float64})         # specify vector type for GPU
+ToRORd()                            # Float64, endocardial, default Stimulus
+ToRORd(Float32; celltype=1)         # Float32, epicardial
+ToRORd(Vector{Float64})             # specify vector type for GPU
+ToRORd(; stim = Stimulus(; amplitude = -40.0, period = 500.0))  # custom stimulus
 ```
 
 Cell types: `0` = endocardial, `1` = epicardial, `2` = midmyocardial.
+
+The `stim` field is an `AbstractStimulus` (default: -53 mV, period 1000 ms,
+1 ms duration). It is evaluated as `stim(x, t)` and returns the full `Istim`.
+For arbitrary or position-dependent waveforms, pass a `FunctionStimulus` or a
+custom `AbstractStimulus` subtype.
 """
-struct ToRORd{T <: AbstractVector} <: AbstractCardiacCellModel
+struct ToRORd{T <: AbstractVector, S} <: AbstractCardiacCellModel
     parameters::T
     celltype::Int
+    stim::S
 end
 
-ToRORd(; celltype::Int = 0) = ToRORd(Float64; celltype)
+ToRORd(; celltype::Int = 0, stim = Stimulus()) = ToRORd(Float64; celltype, stim)
 
-function ToRORd(::Type{ElT}; celltype::Int = 0) where {ElT <: Number}
+function ToRORd(::Type{ElT}; celltype::Int = 0, stim = Stimulus(ElT)) where {ElT <: Number}
     p = zeros(ElT, TORORD_NUM_PARAMS)
     _torord_init_parameters!(p)
-    return ToRORd(p, celltype)
+    return ToRORd(p, celltype, stim)
 end
 
-function ToRORd(::Type{VT}; celltype::Int = 0) where {VT <: AbstractVector}
+function ToRORd(::Type{VT}; celltype::Int = 0, stim = Stimulus(eltype(VT))) where {VT <: AbstractVector}
     p = zeros(eltype(VT), TORORD_NUM_PARAMS)
     _torord_init_parameters!(p)
-    return ToRORd(VT(p), celltype)
+    return ToRORd(VT(p), celltype, stim)
 end
 
 # ---------------------------------------------------------------------------
@@ -59,12 +66,12 @@ end
 # ---------------------------------------------------------------------------
 
 function (model::ToRORd)(du, u, ::Nothing, t)
-    _torord_rhs_impl!(du, u, model.parameters, model.celltype, nothing, t, nothing)
+    _torord_rhs_impl!(du, u, model.parameters, model.celltype, model.stim, nothing, t, nothing)
     return nothing
 end
 
 function (model::ToRORd)(du, u, p::SpatialContext, t)
-    _torord_rhs_impl!(du, u, model.parameters, model.celltype, p.x, t, p.spatial_funcs)
+    _torord_rhs_impl!(du, u, model.parameters, model.celltype, model.stim, p.x, t, p.spatial_funcs)
     return nothing
 end
 
@@ -75,12 +82,12 @@ end
 has_rush_larsen(::ToRORd) = true
 
 function rush_larsen_step!(u_new, u, ::Nothing, t, dt, model::ToRORd)
-    _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, nothing, t, dt, nothing)
+    _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, model.stim, nothing, t, dt, nothing)
     return nothing
 end
 
 function rush_larsen_step!(u_new, u, p::SpatialContext, t, dt, model::ToRORd)
-    _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, p.x, t, dt, p.spatial_funcs)
+    _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, model.stim, p.x, t, dt, p.spatial_funcs)
     return nothing
 end
 
@@ -90,4 +97,3 @@ state_index(::ToRORd, name::Symbol) = TORORD_STATE_INDEX[name]
 parameter_index(::ToRORd, name::Symbol) = TORORD_PARAM_INDEX[name]
 state_names(::ToRORd) = TORORD_STATE_NAMES
 parameter_names(::ToRORd) = TORORD_PARAMETER_NAMES
-

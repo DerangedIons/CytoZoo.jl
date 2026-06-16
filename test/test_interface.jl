@@ -2,7 +2,7 @@
     model = ToRORd()
 
     @test num_states(model) == 65
-    @test num_parameters(model) == 181
+    @test num_parameters(model) == 177  # 181 - 4 stim slots (now on model.stim)
     @test transmembrane_potential_index(model) == 1
     @test has_rush_larsen(model) == true
 
@@ -16,12 +16,13 @@
     @test parameter_index(model, :IKr_Multiplier) == 27
 
     @test length(state_names(model)) == 65
-    @test length(parameter_names(model)) == 181
+    @test length(parameter_names(model)) == 177
     @test state_names(model)[1] == :v
     @test parameter_names(model)[14] == :GNa
 
     @test model.parameters[14] ≈ 11.7802  # GNa default
     @test model.celltype == 0
+    @test model.stim isa Stimulus
 end
 
 @testset "SpatialContext" begin

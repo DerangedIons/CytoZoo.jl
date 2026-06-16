@@ -10,6 +10,23 @@
     @test du[1] != 0.0  # dVm/dt should be nonzero (stimulus at t=0)
 end
 
+@testset "ToRORd — custom stimulus" begin
+    # Constant zero stim → dVm/dt at rest matches the default-stim "off" phase
+    model_off = ToRORd(; stim = FunctionStimulus((x, t) -> 0.0))
+    model_default = ToRORd()
+    u = default_initial_state(model_default)
+
+    du_off = similar(u)
+    du_at_pulse_end = similar(u)
+
+    model_off(du_off, u, nothing, 0.0)
+    # t = 2.0 → default stim is OFF (pulse 0–1 ms, period 1000); off-stim model
+    # at any t should be identical to default at t = 2.0.
+    model_default(du_at_pulse_end, u, nothing, 2.0)
+
+    @test du_off[1] ≈ du_at_pulse_end[1] atol = 1e-12
+end
+
 @testset "ToRORd — Rush-Larsen step" begin
     model = ToRORd()
     u = default_initial_state(model)

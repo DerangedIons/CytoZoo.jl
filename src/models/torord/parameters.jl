@@ -1,4 +1,4 @@
-const TORORD_NUM_PARAMS = 181
+const TORORD_NUM_PARAMS = 177
 
 const TORORD_PARAMETER_NAMES = (
     :Aff,               # 1
@@ -110,78 +110,74 @@ const TORORD_PARAMETER_NAMES = (
     :fTnIP,             # 107
     :gamma,             # 108
     :gamma_wu,          # 109
-    :i_Stim_Amplitude,  # 110
-    :i_Stim_Period,     # 111
-    :i_Stim_PulseDuration, # 112
-    :i_Stim_Start,      # 113
-    :isHypoxic,         # 114
-    :jsrMidpoint,       # 115
-    :k1m,               # 116
-    :k1p,               # 117
-    :k2m,               # 118
-    :k2n,               # 119
-    :k2p,               # 120
-    :k3m,               # 121
-    :k3p,               # 122
-    :k4m,               # 123
-    :k4p,               # 124
-    :k_uw,              # 125
-    :k_ws,              # 126
-    :kasymm,            # 127
-    :kcaoff,            # 128
-    :kcaon,             # 129
-    :kmcmdn,            # 130
-    :kmcsqn,            # 131
-    :kmtrpn_b,          # 132
-    :kna1,              # 133
-    :kna2,              # 134
-    :kna3,              # 135
-    :ko,                # 136
-    :koff,              # 137
-    :ktm_unblock,       # 138
-    :lambda,            # 139
-    :lambda_max,        # 140
-    :lambda_min,        # 141
-    :lambda_rate,       # 142
-    :mode,              # 143
-    :mu_b,              # 144
-    :nK1,               # 145
-    :nNaCa,             # 146
-    :nTnI,              # 147
-    :nao,               # 148
-    :nperm_b,           # 149
-    :nrel,              # 150
-    :nu_b,              # 151
-    :nup,               # 152
-    :offset,            # 153
-    :pH,                # 154
-    :perm50,            # 155
-    :ph_bt,             # 156
-    :phi,               # 157
-    :pkK1,              # 158
-    :pkNaCa,            # 159
-    :pkTnI,             # 160
-    :pkrel,             # 161
-    :pkup,              # 162
-    :qca,               # 163
-    :qna,               # 164
-    :rad_,              # 165
-    :tauCa,             # 166
-    :tauK,              # 167
-    :tauNa,             # 168
-    :thL,               # 169
-    :tjca,              # 170
-    :trpnmax,           # 171
-    :vShift,            # 172
-    :wca,               # 173
-    :wfrac,             # 174
-    :wna,               # 175
-    :wnaca,             # 176
-    :zca,               # 177
-    :zcl,               # 178
-    :zk,                # 179
-    :zna,               # 180
-    :IKr_Multiplier_hetero, # 181
+    :isHypoxic,         # 110
+    :jsrMidpoint,       # 111
+    :k1m,               # 112
+    :k1p,               # 113
+    :k2m,               # 114
+    :k2n,               # 115
+    :k2p,               # 116
+    :k3m,               # 117
+    :k3p,               # 118
+    :k4m,               # 119
+    :k4p,               # 120
+    :k_uw,              # 121
+    :k_ws,              # 122
+    :kasymm,            # 123
+    :kcaoff,            # 124
+    :kcaon,             # 125
+    :kmcmdn,            # 126
+    :kmcsqn,            # 127
+    :kmtrpn_b,          # 128
+    :kna1,              # 129
+    :kna2,              # 130
+    :kna3,              # 131
+    :ko,                # 132
+    :koff,              # 133
+    :ktm_unblock,       # 134
+    :lambda,            # 135
+    :lambda_max,        # 136
+    :lambda_min,        # 137
+    :lambda_rate,       # 138
+    :mode,              # 139
+    :mu_b,              # 140
+    :nK1,               # 141
+    :nNaCa,             # 142
+    :nTnI,              # 143
+    :nao,               # 144
+    :nperm_b,           # 145
+    :nrel,              # 146
+    :nu_b,              # 147
+    :nup,               # 148
+    :offset,            # 149
+    :pH,                # 150
+    :perm50,            # 151
+    :ph_bt,             # 152
+    :phi,               # 153
+    :pkK1,              # 154
+    :pkNaCa,            # 155
+    :pkTnI,             # 156
+    :pkrel,             # 157
+    :pkup,              # 158
+    :qca,               # 159
+    :qna,               # 160
+    :rad_,              # 161
+    :tauCa,             # 162
+    :tauK,              # 163
+    :tauNa,             # 164
+    :thL,               # 165
+    :tjca,              # 166
+    :trpnmax,           # 167
+    :vShift,            # 168
+    :wca,               # 169
+    :wfrac,             # 170
+    :wna,               # 171
+    :wnaca,             # 172
+    :zca,               # 173
+    :zcl,               # 174
+    :zk,                # 175
+    :zna,               # 176
+    :IKr_Multiplier_hetero, # 177
 )
 
 const TORORD_PARAM_INDEX = Dict{Symbol,Int}(
@@ -298,77 +294,73 @@ function _torord_init_parameters!(p)
     p[107] = 1.0              # fTnIP
     p[108] = 0.0085           # gamma
     p[109] = 0.615            # gamma_wu
-    p[110] = -53.0            # i_Stim_Amplitude
-    p[111] = 1000.0           # i_Stim_Period
-    p[112] = 1.0              # i_Stim_PulseDuration
-    p[113] = 0.0              # i_Stim_Start
-    p[114] = 1.0              # isHypoxic
-    p[115] = 1.7              # jsrMidpoint
-    p[116] = 182.4            # k1m
-    p[117] = 949.5            # k1p
-    p[118] = 39.4             # k2m
-    p[119] = 500.0            # k2n
-    p[120] = 687.2            # k2p
-    p[121] = 79300.0          # k3m
-    p[122] = 1899.0           # k3p
-    p[123] = 40.0             # k4m
-    p[124] = 639.0            # k4p
-    p[125] = 0.026            # k_uw
-    p[126] = 0.004            # k_ws
-    p[127] = 12.5             # kasymm
-    p[128] = 5000.0           # kcaoff
-    p[129] = 1500000.0        # kcaon
-    p[130] = 0.00238          # kmcmdn
-    p[131] = 0.8              # kmcsqn
-    p[132] = 0.0005           # kmtrpn_b
-    p[133] = 15.0             # kna1
-    p[134] = 5.0              # kna2
-    p[135] = 88.12            # kna3
-    p[136] = 5.0              # ko
-    p[137] = 0.07854          # koff
-    p[138] = 0.02626          # ktm_unblock
-    p[139] = 1.0              # lambda
-    p[140] = 1.2              # lambda_max
-    p[141] = 0.87             # lambda_min
-    p[142] = 0.0              # lambda_rate
-    p[143] = 0.0              # mode
-    p[144] = 3.94046          # mu_b
-    p[145] = 1.795            # nK1
-    p[146] = 0.991            # nNaCa
-    p[147] = 1.65             # nTnI
-    p[148] = 140.0            # nao
-    p[149] = 2.036            # nperm_b
-    p[150] = 1.87             # nrel
-    p[151] = 10.15996         # nu_b
-    p[152] = 1.14             # nup
-    p[153] = 0.0              # offset
-    p[154] = 7.2              # pH
-    p[155] = 0.35             # perm50
-    p[156] = 0.621            # ph_bt
-    p[157] = 2.23             # phi
-    p[158] = 6.86             # pkK1
-    p[159] = 7.37             # pkNaCa
-    p[160] = 6.79             # pkTnI
-    p[161] = 6.64             # pkrel
-    p[162] = 7.53             # pkup
-    p[163] = 0.167            # qca
-    p[164] = 0.5224           # qna
-    p[165] = 0.0011           # rad_
-    p[166] = 0.2              # tauCa
-    p[167] = 2.0              # tauK
-    p[168] = 2.0              # tauNa
-    p[169] = 200.0            # thL
-    p[170] = 72.5             # tjca
-    p[171] = 0.07             # trpnmax
-    p[172] = 0.0              # vShift
-    p[173] = 60000.0          # wca
-    p[174] = 0.5              # wfrac
-    p[175] = 60000.0          # wna
-    p[176] = 5000.0           # wnaca
-    p[177] = 2.0              # zca
-    p[178] = -1.0             # zcl
-    p[179] = 1.0              # zk
-    p[180] = 1.0              # zna
-    p[181] = 1.0              # IKr_Multiplier_hetero
+    p[110] = 1.0              # isHypoxic
+    p[111] = 1.7              # jsrMidpoint
+    p[112] = 182.4            # k1m
+    p[113] = 949.5            # k1p
+    p[114] = 39.4             # k2m
+    p[115] = 500.0            # k2n
+    p[116] = 687.2            # k2p
+    p[117] = 79300.0          # k3m
+    p[118] = 1899.0           # k3p
+    p[119] = 40.0             # k4m
+    p[120] = 639.0            # k4p
+    p[121] = 0.026            # k_uw
+    p[122] = 0.004            # k_ws
+    p[123] = 12.5             # kasymm
+    p[124] = 5000.0           # kcaoff
+    p[125] = 1500000.0        # kcaon
+    p[126] = 0.00238          # kmcmdn
+    p[127] = 0.8              # kmcsqn
+    p[128] = 0.0005           # kmtrpn_b
+    p[129] = 15.0             # kna1
+    p[130] = 5.0              # kna2
+    p[131] = 88.12            # kna3
+    p[132] = 5.0              # ko
+    p[133] = 0.07854          # koff
+    p[134] = 0.02626          # ktm_unblock
+    p[135] = 1.0              # lambda
+    p[136] = 1.2              # lambda_max
+    p[137] = 0.87             # lambda_min
+    p[138] = 0.0              # lambda_rate
+    p[139] = 0.0              # mode
+    p[140] = 3.94046          # mu_b
+    p[141] = 1.795            # nK1
+    p[142] = 0.991            # nNaCa
+    p[143] = 1.65             # nTnI
+    p[144] = 140.0            # nao
+    p[145] = 2.036            # nperm_b
+    p[146] = 1.87             # nrel
+    p[147] = 10.15996         # nu_b
+    p[148] = 1.14             # nup
+    p[149] = 0.0              # offset
+    p[150] = 7.2              # pH
+    p[151] = 0.35             # perm50
+    p[152] = 0.621            # ph_bt
+    p[153] = 2.23             # phi
+    p[154] = 6.86             # pkK1
+    p[155] = 7.37             # pkNaCa
+    p[156] = 6.79             # pkTnI
+    p[157] = 6.64             # pkrel
+    p[158] = 7.53             # pkup
+    p[159] = 0.167            # qca
+    p[160] = 0.5224           # qna
+    p[161] = 0.0011           # rad_
+    p[162] = 0.2              # tauCa
+    p[163] = 2.0              # tauK
+    p[164] = 2.0              # tauNa
+    p[165] = 200.0            # thL
+    p[166] = 72.5             # tjca
+    p[167] = 0.07             # trpnmax
+    p[168] = 0.0              # vShift
+    p[169] = 60000.0          # wca
+    p[170] = 0.5              # wfrac
+    p[171] = 60000.0          # wna
+    p[172] = 5000.0           # wnaca
+    p[173] = 2.0              # zca
+    p[174] = -1.0             # zcl
+    p[175] = 1.0              # zk
+    p[176] = 1.0              # zna
+    p[177] = 1.0              # IKr_Multiplier_hetero
     return nothing
 end

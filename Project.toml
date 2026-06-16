@@ -6,15 +6,13 @@ authors = ["Kyle Beggs (beggskw@gmail.com) and contributors"]
 [weakdeps]
 SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 Thunderbolt = "909927c2-98d5-4a67-bba9-79f03a9ad49b"
-TWorld = "7b3bcaa7-e8d1-4d64-97d9-61cb5d39b583"
 
 [extensions]
 SciMLBaseExt = "SciMLBase"
 ThunderboltExt = "Thunderbolt"
-TWorldExt = "TWorld"
 
 [compat]
-SciMLBase = "2"
+SciMLBase = "2, 3"
 julia = "1.10"
 
 [extras]

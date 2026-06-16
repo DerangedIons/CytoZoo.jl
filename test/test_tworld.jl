@@ -1,5 +1,8 @@
 using TWorld
 
+# `TWorldCellModel` is now exported by TWorld itself (native adherence to the
+# CytoZoo interface). No CytoZoo wrapper / ext involved.
+
 @testset "TWorldCellModel — construction" begin
     for celltype in (0.0, 1.0, 2.0), sex in (0.0, 1.0, 2.0)
         model = TWorldCellModel(; celltype, sex)
@@ -34,25 +37,15 @@ end
     @test du_cytozoo == du_direct  # bitwise identical (pure delegation)
 end
 
-@testset "TWorldCellModel — Rush-Larsen step" begin
-    model = TWorldCellModel()
-    u = default_initial_state(model)
-    u_new = similar(u)
-
-    rush_larsen_step!(u_new, u, nothing, 0.0, 0.01, model)
-
-    @test !any(isnan, u_new)
-    @test !any(isinf, u_new)
-    @test u_new[1] != u[1]  # Vm should change
-end
-
 @testset "TWorldCellModel — interface completeness" begin
     model = TWorldCellModel()
 
     @test num_states(model) == 92
     @test num_parameters(model) > 0
     @test transmembrane_potential_index(model) == 1
-    @test has_rush_larsen(model) == true
+    # TWorld does not expose a single-step Rush-Larsen primitive; users go
+    # through `solve(ODEProblem(model, tspan), TWorld.RushLarsen(); dt=...)`.
+    @test has_rush_larsen(model) == false
 
     u0 = default_initial_state(model)
     @test length(u0) == 92
@@ -96,4 +89,12 @@ end
 
     alloc = @allocated model(du, u, nothing, 0.0)
     @info "TWorldCellModel functor allocations: $alloc bytes"
+end
+
+@testset "Stimulus — exported by both packages" begin
+    # Both CytoZoo and TWorld expose the same stimulus types (CytoZoo owns them;
+    # TWorld re-exports). Identity check confirms no shadowing.
+    @test TWorld.AbstractStimulus === CytoZoo.AbstractStimulus
+    @test TWorld.Stimulus === CytoZoo.Stimulus
+    @test TWorld.FunctionStimulus === CytoZoo.FunctionStimulus
 end

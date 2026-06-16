@@ -3,6 +3,7 @@ function _torord_rhs_impl!(
     u::AbstractVector{T},
     parameters::AbstractVector,
     celltype,
+    stim,
     x,
     t,
     spatial_funcs::F,
@@ -196,14 +197,6 @@ function _torord_rhs_impl!(
     fTnIP = parameters[107]
     gamma = parameters[108]
     gamma_wu = parameters[109]
-    i_Stim_Amplitude = if F !== Nothing && hasproperty(spatial_funcs, :stim)
-        T(_resolve_spatial(spatial_funcs.stim, x, t))
-    else
-        T(parameters[110])
-    end
-    i_Stim_Period = parameters[111]
-    i_Stim_PulseDuration = parameters[112]
-    i_Stim_Start = parameters[113]
     isHypoxic = if F !== Nothing && hasproperty(spatial_funcs, :isHypoxic)
         T(_resolve_spatial(spatial_funcs.isHypoxic, x, t))
     else
@@ -214,77 +207,77 @@ function _torord_rhs_impl!(
     else
         T(celltype)
     end
-    jsrMidpoint = parameters[115]
-    k1m = parameters[116]
-    k1p = parameters[117]
-    k2m = parameters[118]
-    k2n = parameters[119]
-    k2p = parameters[120]
-    k3m = parameters[121]
-    k3p = parameters[122]
-    k4m = parameters[123]
-    k4p = parameters[124]
-    k_uw = parameters[125]
-    k_ws = parameters[126]
-    kasymm = parameters[127]
-    kcaoff = parameters[128]
-    kcaon = parameters[129]
-    kmcmdn = parameters[130]
-    kmcsqn = parameters[131]
-    kmtrpn_b = parameters[132]
-    kna1 = parameters[133]
-    kna2 = parameters[134]
-    kna3 = parameters[135]
-    ko = parameters[136]
-    koff = parameters[137]
-    ktm_unblock = parameters[138]
-    lambda = parameters[139]
-    lambda_max = parameters[140]
-    lambda_min = parameters[141]
-    lambda_rate = parameters[142]
-    mode = parameters[143]
-    mu_b = parameters[144]
-    nK1 = parameters[145]
-    nNaCa = parameters[146]
-    nTnI = parameters[147]
-    nao = parameters[148]
-    nperm_b = parameters[149]
-    nrel = parameters[150]
-    nu_b = parameters[151]
-    nup = parameters[152]
-    offset = parameters[153]
-    pH_base = parameters[154]
+    jsrMidpoint = parameters[111]
+    k1m = parameters[112]
+    k1p = parameters[113]
+    k2m = parameters[114]
+    k2n = parameters[115]
+    k2p = parameters[116]
+    k3m = parameters[117]
+    k3p = parameters[118]
+    k4m = parameters[119]
+    k4p = parameters[120]
+    k_uw = parameters[121]
+    k_ws = parameters[122]
+    kasymm = parameters[123]
+    kcaoff = parameters[124]
+    kcaon = parameters[125]
+    kmcmdn = parameters[126]
+    kmcsqn = parameters[127]
+    kmtrpn_b = parameters[128]
+    kna1 = parameters[129]
+    kna2 = parameters[130]
+    kna3 = parameters[131]
+    ko = parameters[132]
+    koff = parameters[133]
+    ktm_unblock = parameters[134]
+    lambda = parameters[135]
+    lambda_max = parameters[136]
+    lambda_min = parameters[137]
+    lambda_rate = parameters[138]
+    mode = parameters[139]
+    mu_b = parameters[140]
+    nK1 = parameters[141]
+    nNaCa = parameters[142]
+    nTnI = parameters[143]
+    nao = parameters[144]
+    nperm_b = parameters[145]
+    nrel = parameters[146]
+    nu_b = parameters[147]
+    nup = parameters[148]
+    offset = parameters[149]
+    pH_base = parameters[150]
     pH = if F !== Nothing && hasproperty(spatial_funcs, :pH)
         T(_resolve_spatial(spatial_funcs.pH, x, t))
     else
         pH_base
     end
-    perm50 = parameters[155]
-    ph_bt = parameters[156]
-    phi = parameters[157]
-    pkK1 = parameters[158]
-    pkNaCa = parameters[159]
-    pkTnI = parameters[160]
-    pkrel = parameters[161]
-    pkup = parameters[162]
-    qca = parameters[163]
-    qna = parameters[164]
-    rad_ = parameters[165]
-    tauCa = parameters[166]
-    tauK = parameters[167]
-    tauNa = parameters[168]
-    thL = parameters[169]
-    tjca = parameters[170]
-    trpnmax = parameters[171]
-    vShift = parameters[172]
-    wca = parameters[173]
-    wfrac = parameters[174]
-    wna = parameters[175]
-    wnaca = parameters[176]
-    zca = parameters[177]
-    zcl = parameters[178]
-    zk = parameters[179]
-    zna = parameters[180]
+    perm50 = parameters[151]
+    ph_bt = parameters[152]
+    phi = parameters[153]
+    pkK1 = parameters[154]
+    pkNaCa = parameters[155]
+    pkTnI = parameters[156]
+    pkrel = parameters[157]
+    pkup = parameters[158]
+    qca = parameters[159]
+    qna = parameters[160]
+    rad_ = parameters[161]
+    tauCa = parameters[162]
+    tauK = parameters[163]
+    tauNa = parameters[164]
+    thL = parameters[165]
+    tjca = parameters[166]
+    trpnmax = parameters[167]
+    vShift = parameters[168]
+    wca = parameters[169]
+    wfrac = parameters[170]
+    wna = parameters[171]
+    wnaca = parameters[172]
+    zca = parameters[173]
+    zcl = parameters[174]
+    zk = parameters[175]
+    zna = parameters[176]
 
     # Assign expressions
     GNa_P = T(1.7) * T(11.7802)
@@ -481,19 +474,7 @@ function _torord_rhs_impl!(
         (isHypoxic == T(1)) ? (T(0.9) * INa_Multiplier) : (INa_Multiplier)
     )
     Iss = (T(0.5) * (T(4.0) * cass + (clss + (kss + nass)))) / T(1000.0)
-    Istim = (
-        if (
-            i_Stim_PulseDuration >=
-            t + (
-                (-i_Stim_Period) .* floor((-(i_Stim_Start - t)) ./ i_Stim_Period) -
-                i_Stim_Start
-            ) && i_Stim_Start <= t
-        )
-            (i_Stim_Amplitude)
-        else
-            (T(0.0))
-        end
-    )
+    Istim = T(stim(x, t))
     Jdiff = (-cai + cass) ./ tauCa
     JdiffCl = (-cli + clss) ./ tauNa
     JdiffNa = (-nai + nass) ./ tauNa
