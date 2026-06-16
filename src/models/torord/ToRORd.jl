@@ -71,7 +71,7 @@ function (model::ToRORd)(du, u, ::Nothing, t)
 end
 
 function (model::ToRORd)(du, u, p::SpatialContext, t)
-    _torord_rhs_impl!(du, u, model.parameters, model.celltype, model.stim, p.x, t, p.spatial_funcs)
+    _torord_rhs_impl!(du, u, model.parameters, model.celltype, model.stim, p.x, t, p.overrides)
     return nothing
 end
 
@@ -87,7 +87,7 @@ function rush_larsen_step!(u_new, u, ::Nothing, t, dt, model::ToRORd)
 end
 
 function rush_larsen_step!(u_new, u, p::SpatialContext, t, dt, model::ToRORd)
-    _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, model.stim, p.x, t, dt, p.spatial_funcs)
+    _torord_rush_larsen_impl!(u_new, u, model.parameters, model.celltype, model.stim, p.x, t, dt, p.overrides)
     return nothing
 end
 

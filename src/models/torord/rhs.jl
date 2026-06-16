@@ -6,7 +6,7 @@ function _torord_rhs_impl!(
     stim,
     x,
     t,
-    spatial_funcs::F,
+    overrides::F,
 ) where {T, F}
     # Assign states
     #hL = u[1]
@@ -104,8 +104,8 @@ function _torord_rhs_impl!(
     IClb_Multiplier = parameters[24]
     IK1_Multiplier = parameters[25]
     IKb_Multiplier = parameters[26]
-    IKr_Multiplier_spatial = if F !== Nothing && hasproperty(spatial_funcs, :IKr_Multiplier)
-        T(_resolve_spatial(spatial_funcs.IKr_Multiplier, x, t))
+    IKr_Multiplier_spatial = if F !== Nothing && hasproperty(overrides, :IKr_Multiplier)
+        T(_resolve_spatial(overrides.IKr_Multiplier, x, t))
     else
         one(T)
     end
@@ -160,8 +160,8 @@ function _torord_rhs_impl!(
     Q10SRCaP = parameters[75]
     R = parameters[76]
     T_base = parameters[77]
-    T_val = if F !== Nothing && hasproperty(spatial_funcs, :T)
-        T(_resolve_spatial(spatial_funcs.T, x, t))
+    T_val = if F !== Nothing && hasproperty(overrides, :T)
+        T(_resolve_spatial(overrides.T, x, t))
     else
         T_base
     end
@@ -197,13 +197,13 @@ function _torord_rhs_impl!(
     fTnIP = parameters[107]
     gamma = parameters[108]
     gamma_wu = parameters[109]
-    isHypoxic = if F !== Nothing && hasproperty(spatial_funcs, :isHypoxic)
-        T(_resolve_spatial(spatial_funcs.isHypoxic, x, t))
+    isHypoxic = if F !== Nothing && hasproperty(overrides, :isHypoxic)
+        T(_resolve_spatial(overrides.isHypoxic, x, t))
     else
         zero(T)
     end
-    celltype_val = if F !== Nothing && hasproperty(spatial_funcs, :celltype)
-        T(_resolve_spatial(spatial_funcs.celltype, x, t))
+    celltype_val = if F !== Nothing && hasproperty(overrides, :celltype)
+        T(_resolve_spatial(overrides.celltype, x, t))
     else
         T(celltype)
     end
@@ -247,8 +247,8 @@ function _torord_rhs_impl!(
     nup = parameters[148]
     offset = parameters[149]
     pH_base = parameters[150]
-    pH = if F !== Nothing && hasproperty(spatial_funcs, :pH)
-        T(_resolve_spatial(spatial_funcs.pH, x, t))
+    pH = if F !== Nothing && hasproperty(overrides, :pH)
+        T(_resolve_spatial(overrides.pH, x, t))
     else
         pH_base
     end

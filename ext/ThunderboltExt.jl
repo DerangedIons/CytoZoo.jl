@@ -5,7 +5,7 @@ using Thunderbolt
 
 struct CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel
     model::M
-    spatial_funcs::SF
+    overrides::SF
 end
 
 Thunderbolt.num_states(w::CytoZooIonicModel) = CytoZoo.num_states(w.model)
@@ -23,7 +23,7 @@ function Thunderbolt.cell_rhs!(
     t::TU,
     w::CytoZooIonicModel{<:CytoZoo.AbstractCellModel},
 ) where {TU, TX}
-    p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
+    p = w.overrides === nothing ? nothing : CytoZoo.SpatialContext(x, w.overrides)
     w.model(du, u, p, t)
     return nothing
 end
@@ -35,12 +35,12 @@ function Thunderbolt.cell_rhs!(
     t::TU,
     w::CytoZooIonicModel{<:CytoZoo.AbstractCellModel},
 ) where {TU}
-    p = w.spatial_funcs === nothing ? nothing : CytoZoo.SpatialContext(x, w.spatial_funcs)
+    p = w.overrides === nothing ? nothing : CytoZoo.SpatialContext(x, w.overrides)
     w.model(du, u, p, t)
     return nothing
 end
 
-CytoZoo.thunderbolt_model(m::CytoZoo.AbstractCellModel; spatial_funcs=nothing) =
-    CytoZooIonicModel(m, spatial_funcs)
+CytoZoo.thunderbolt_model(m::CytoZoo.AbstractCellModel; overrides=nothing) =
+    CytoZooIonicModel(m, overrides)
 
 end
