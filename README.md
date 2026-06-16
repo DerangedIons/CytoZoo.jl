@@ -15,7 +15,6 @@ A Julia package providing a registry of cardiac cell models with a common functo
 
 **Key features:**
 - Zero runtime dependencies — all model code is pure Julia arithmetic
-- Dual-backend — hand-coded functor models and MTK symbolic models behind the same interface
 - Functor interface — models are callable structs compatible with DifferentialEquations.jl
 - Rush-Larsen exponential integrator support
 - Spatial heterogeneity via `SpatialContext` in the DiffEq `p` argument (zero overhead when unused)
@@ -58,11 +57,9 @@ rush_larsen_step!(u_new, u, nothing, 0.0, 0.01, model)
 
 ## Available Models
 
-| Model | States | Parameters | Cell types | Rush-Larsen | Backend |
-|-------|--------|------------|------------|-------------|---------|
-| `ToRORd` | 65 | 181 | endocardial (0), epicardial (1), midmyocardial (2) | yes | functor |
-| `TWorldCellModel` | 92 | varies | endocardial (0), epicardial (1), midmyocardial (2) | yes | functor (ext) |
-| `BeelerReuter` | 8 | 7 | — | no | MTK |
+| Model | States | Parameters | Cell types | Rush-Larsen |
+|-------|--------|------------|------------|-------------|
+| `ToRORd` | 65 | 177 | endocardial (0), epicardial (1), midmyocardial (2) | yes |
 
 ```julia
 ToRORd()                         # Float64, endocardial
@@ -71,7 +68,7 @@ ToRORd(Float32)                  # Float32, endocardial
 ToRORd(Float32; celltype=2)      # Float32, midmyocardial
 ```
 
-`BeelerReuter()` requires loading `MTKCardiacCellModels` and `ModelingToolkit` (see [MTK Integration](#mtk-integration) below).
+Additional models live in their own packages that adhere to the interface natively (they depend on CytoZoo and subtype `AbstractCardiacCellModel`) — e.g. [`TWorld.jl`](https://github.com/DerangedIons/TWorld.jl) exposes `TWorldCellModel`. Load the package and drive it behind the same uniform interface (`using CytoZoo, TWorld` lets you hot-swap models).
 
 ## Interface
 
@@ -94,8 +91,6 @@ state_index(model, :v)                       # state index by name
 parameter_index(model, :GNa)                 # parameter index by name
 state_names(model)                           # tuple of all state names
 parameter_names(model)                       # tuple of all parameter names
-symbolic_system(model)                       # MTK system (MTK-backed models only)
-has_symbolic_system(model)                   # whether a symbolic system is available
 ```
 
 ## Named Access
@@ -152,23 +147,6 @@ pass a `FunctionStimulus` or a custom `AbstractStimulus` subtype:
 local_stim = FunctionStimulus((x, t) -> (mod(t, 1000.0) < 1.0 && x[1] > 1.5) ? -53.0 : 0.0)
 model = ToRORd(; stim = local_stim)
 ```
-
-## MTK Integration
-
-With [MTKCardiacCellModels](https://github.com/jClugstor/MTKCardiacCellModels) and [ModelingToolkit.jl](https://github.com/SciML/ModelingToolkit.jl) loaded, MTK-backed models become available:
-
-```julia
-using CytoZoo, MTKCardiacCellModels, ModelingToolkit, OrdinaryDiffEq
-
-model = BeelerReuter()              # 8-state Beeler-Reuter 1977 model
-prob  = ODEProblem(model, (0.0, 500.0))
-sol   = solve(prob, Tsit5())
-
-# access the symbolic system for inspection/composition
-sys = symbolic_system(model)
-```
-
-MTK-backed models implement the same interface as traditional functor models — `num_states`, `state_names`, `default_initial_state`, etc. all work identically.
 
 ## Thunderbolt Integration
 
