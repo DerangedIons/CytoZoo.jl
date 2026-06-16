@@ -12,6 +12,18 @@ Coupling is built on **OrdinaryDiffEqOperatorSplitting.jl** (OS) — operator sp
 
 Top priorities, in order: **(1) high performance** (target: within ~1% of uncoupled component performance, no allocations in hot path); **(2) simple authoring API** for someone writing a single component model — they should write today's `f(du, u, p, t)` and not learn anything new for the alias case; **(3) simple coupling API** for the user composing models.
 
+## Amendment (2026-06-16): coupling ships as an extension; OS is a weakdep
+
+**Supersedes the "OS becomes a hard dependency, coupling lives in core" choice below** (see Architecture and the `Project.toml`/`src/coupling.jl` notes in "Files to modify / create"). Decided while implementing, after finding that `OrdinaryDiffEqOperatorSplitting` (OS) is **not in the General registry** and pulls in the full OrdinaryDiffEq solver tree.
+
+A hard `[deps]` on OS would end CytoZoo's "zero runtime dependencies" property — every user, even one integrating a single ToRORd cell, would load the solver stack, and the base package would hard-depend on an unregistered package. Instead:
+
+- **OS is a `[weakdeps]`** behind a new `CouplingExt`, alongside `SciMLBaseExt`/`ThunderboltExt`. The base stays zero-dep; coupling is opt-in via `using CytoZoo, OrdinaryDiffEqOperatorSplitting`.
+- **Split point:** the pure-Julia parts — `CoupledModel`, `couple(...)`, layout computation, and the `AbstractCellModel` interface methods on `CoupledModel` — live in **base `src/coupling.jl`** (no OS import; fully testable without solving). The OS-dependent parts — `build_split_function(::CoupledModel)`, `OperatorSplittingProblem(::CoupledModel, tspan)`, and synchronizer wiring — live in **`ext/CouplingExt.jl`**.
+- `couple` and `CoupledModel` are exported from base; the solving entry points become available once OS is loaded.
+
+Everything else below (layout rules, alias-via-operator-order semantics, synchronizer-based cross-refs, the verification plan) stands unchanged.
+
 ## Architecture
 
 ```
