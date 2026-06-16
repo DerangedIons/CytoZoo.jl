@@ -30,7 +30,9 @@ function CytoZoo.build_split_function(cm::CoupledModel)
     order = cm.layout.operator_order
     fs = Tuple(ODEFunction(ComponentOperator(cm.components[ck], _frozen_indices(cm, ck))) for ck in order)
     indices = Tuple(cm.layout.solution_indices[ck] for ck in order)
-    return GenericSplitFunction(fs, indices)
+    isempty(cm.refs) && return GenericSplitFunction(fs, indices)
+    syncs = Tuple(_synchronizer(cm, ck) for ck in order)
+    return GenericSplitFunction(fs, indices, syncs)
 end
 
 # Local state indices `ck` participates in via an alias but does not own.
@@ -61,5 +63,39 @@ function CytoZoo.coupled_algorithm(cm::CoupledModel, inner; scheme = OS.LieTrott
 end
 _inner_solver(inner, ::Symbol) = inner
 _inner_solver(inner::NamedTuple, ck::Symbol) = inner[ck]
+
+# --- read-only cross-references (refs) ---
+
+# Before the receiver steps, copy each source state's current global value into the
+# receiver model's parameter slot; the receiver's functor reads that slot as an input.
+struct CrossRefSync{P <: AbstractVector}
+    params::P                        # receiver's parameter vector (mutated in place)
+    writes::Vector{Tuple{Int, Int}}  # (source global state index, destination parameter index)
+end
+
+# Override forward_sync_external! itself (not synchronize_solution_with_parameters!, whose
+# generic path routes through child.p — our operators carry NullParameters). Types are
+# strictly more specific than OS's generic method so there is no dispatch ambiguity.
+function OS.forward_sync_external!(parent::OS.OperatorSplittingIntegrator, child::OS.DEIntegrator, sync::CrossRefSync)
+    @inbounds for (src, dst) in sync.writes
+        sync.params[dst] = parent.u[src]
+    end
+    return nothing
+end
+OS.backward_sync_external!(::OS.OperatorSplittingIntegrator, ::OS.DEIntegrator, ::CrossRefSync) = nothing
+
+_parameter_vector(model) = model.parameters
+
+function _synchronizer(cm::CoupledModel, ck::Symbol)
+    writes = Tuple{Int, Int}[]
+    for r in cm.refs
+        r.dst === ck || continue
+        src_model = cm.components[r.src]
+        src_global = cm.layout.solution_indices[r.src][CytoZoo.state_index(src_model, r.src_state)]
+        push!(writes, (src_global, CytoZoo.parameter_index(cm.components[ck], r.dst_slot)))
+    end
+    isempty(writes) && return OS.NoExternalSynchronization()
+    return CrossRefSync(_parameter_vector(cm.components[ck]), writes)
+end
 
 end

@@ -52,3 +52,35 @@ end
     # B read the owner-governed shared value (x = d): dy = -d ⇒ y(1) = exp(-1) - 1
     @test integ.u[state_index(cm, :B_y)] ≈ (exp(-1.0) - 1.0) atol = 2e-2
 end
+
+# Cross-ref source: constant Vm = 2.0. Receiver reads it via a parameter slot.
+struct _RefSrc <: CytoZoo.AbstractCellModel end
+CytoZoo.num_states(::_RefSrc) = 2
+CytoZoo.state_names(::_RefSrc) = (:Vm, :w)
+CytoZoo.default_initial_state(::_RefSrc) = [2.0, 0.0]
+CytoZoo.state_index(::_RefSrc, n::Symbol) = findfirst(==(n), (:Vm, :w))
+CytoZoo.transmembrane_potential_index(::_RefSrc) = 1
+(::_RefSrc)(du, u, p, t) = (du[1] = 0.0; du[2] = 0.0; nothing)
+
+struct _RefRecv <: CytoZoo.AbstractCellModel
+    parameters::Vector{Float64}     # one slot :Vm_ext, fed by the synchronizer
+end
+_RefRecv() = _RefRecv([0.0])
+CytoZoo.num_states(::_RefRecv) = 1
+CytoZoo.state_names(::_RefRecv) = (:z,)
+CytoZoo.default_initial_state(::_RefRecv) = [0.0]
+CytoZoo.state_index(::_RefRecv, n::Symbol) = findfirst(==(n), (:z,))
+CytoZoo.transmembrane_potential_index(::_RefRecv) = 1
+CytoZoo.parameter_index(::_RefRecv, n::Symbol) = n === :Vm_ext ? 1 : nothing
+(m::_RefRecv)(du, u, p, t) = (du[1] = m.parameters[1]; nothing)   # z integrates the synced Vm
+
+@testset "CouplingExt — cross-ref feeds a source state into a receiver param" begin
+    recv = _RefRecv()
+    cm = couple((A = _RefSrc(), B = recv); refs = [crossref(:A => :Vm, :B => :Vm_ext)])
+    @test num_states(cm) == 3                              # Vm, w, B_z
+    prob = OperatorSplittingProblem(cm, (0.0, 1.0))
+    integ = init(prob, coupled_algorithm(cm, Tsit5()); dt = 0.1, adaptive = false)
+    solve!(integ)
+    @test integ.u[state_index(cm, :B_z)] ≈ 2.0 rtol = 1e-6  # z = ∫ Vm dt = 2·1, Vm constant 2
+    @test recv.parameters[1] ≈ 2.0                          # synchronizer wrote Vm into the receiver param
+end

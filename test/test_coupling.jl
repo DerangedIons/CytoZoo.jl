@@ -16,6 +16,15 @@ CytoZoo.default_initial_state(::_CplMockB) = [10.0, 20.0]
 CytoZoo.state_index(::_CplMockB, n::Symbol) = findfirst(==(n), (:x, :y))
 CytoZoo.transmembrane_potential_index(::_CplMockB) = 1
 
+# Mock with a parameter slot :in, for cross-ref validation.
+struct _CplMockP <: CytoZoo.AbstractCellModel end
+CytoZoo.num_states(::_CplMockP) = 1
+CytoZoo.state_names(::_CplMockP) = (:z,)
+CytoZoo.default_initial_state(::_CplMockP) = [0.0]
+CytoZoo.state_index(::_CplMockP, n::Symbol) = findfirst(==(n), (:z,))
+CytoZoo.transmembrane_potential_index(::_CplMockP) = 1
+CytoZoo.parameter_index(::_CplMockP, n::Symbol) = n === :in ? 1 : nothing
+
 @testset "couple — single component" begin
     cm = couple((A = _CplMockA(),))
     @test cm isa CoupledModel
@@ -65,4 +74,13 @@ end
     cm = couple((A = _CplMockA(),))
     @test_throws ArgumentError cm(nothing, nothing, nothing, 0.0)                          # not a single functor
     @test_throws ArgumentError num_parameters(cm)
+end
+
+@testset "couple — crossref validation" begin
+    cm = couple((A = _CplMockA(), P = _CplMockP()); refs = [crossref(:A => :b, :P => :in)])
+    @test cm.refs[1] isa CytoZoo.CrossRef
+    @test_throws ArgumentError couple((A = _CplMockA(), P = _CplMockP());
+        refs = [crossref(:A => :b, :P => :nope)])                                          # no such param slot
+    @test_throws ArgumentError couple((A = _CplMockA(), P = _CplMockP());
+        refs = [crossref(:A => :nostate, :P => :in)])                                      # no such source state
 end
