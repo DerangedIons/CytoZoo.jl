@@ -163,3 +163,27 @@ ionic = thunderbolt_model(model)    # CytoZooIonicModel wrapper
 overrides = (IKr_Multiplier = (x, t) -> x[1] > 2.0 ? 0.5 : 1.0,)
 ionic = thunderbolt_model(model; overrides)
 ```
+
+## Coupling
+
+Compose two or more models into one combined model and solve it by operator splitting. Requires `OrdinaryDiffEqOperatorSplitting` loaded; it is a weak dependency, so the base package stays dependency-free.
+
+```julia
+using CytoZoo, OrdinaryDiffEqOperatorSplitting, OrdinaryDiffEq
+
+coupled = couple(
+    (A = ModelA(), B = ModelB());
+    aliases = [alias(:A => :d, :B => :x; owner = :A)],   # A.d ≡ B.x — A's equation governs the shared state
+    refs    = [crossref(:A => :Vm, :B => :Vm_ext)],      # B reads A's Vm through its :Vm_ext parameter slot
+)
+
+prob  = OperatorSplittingProblem(coupled, (0.0, 1000.0))
+integ = init(prob, coupled_algorithm(coupled, Tsit5()); dt = 0.05, adaptive = false)
+solve!(integ)
+integ.u[state_index(coupled, :d)]    # value of the shared state at the final time
+```
+
+- **Alias** — two models share one state; the `owner`'s equation governs it (the other's equation for that state is discarded), while the non-owner still reads the value.
+- **Cross-ref** — a model reads another model's state through one of its parameter slots; the receiver must expose that writable slot.
+
+`CoupledModel` is itself an `AbstractCardiacCellModel`, so couplings nest. See [`examples/coupling_toy.jl`](examples/coupling_toy.jl) for a runnable demo.

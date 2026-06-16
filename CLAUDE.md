@@ -55,6 +55,16 @@ Naming collision avoidance in the RHS: Faraday's constant → `F_param`, tempera
 
 GPU-safe isbits spatial functor types for use with `SpatialContext`: `Constant`, `SpatialStep`, `SpatialGradient`. All `<: SpatialFunction`. Users can define custom isbits callables `f(x, t) -> T` for GPU compatibility, or use closures for CPU-only simulations.
 
+### Coupling (src/coupling.jl + ext/CouplingExt.jl)
+
+Compose two or more `AbstractCellModel`s into one combined model solved by operator splitting (`OrdinaryDiffEqOperatorSplitting`, OS). `CoupledModel <: AbstractCardiacCellModel`, so couplings nest. The base `src/coupling.jl` is pure Julia (no OS dep): `couple(components::NamedTuple; aliases, refs)` validates and precomputes the global-state layout (per-component `solution_indices`, canonical names, ICs, operator order); it implements the layout/query interface but is **not** a direct functor (it throws — splitting ≠ a single RHS). OS-dependent solving lives in `ext/CouplingExt.jl` (OS is a weakdep, the ext triggers with SciMLBase): `OperatorSplittingProblem(::CoupledModel, tspan)` and `coupled_algorithm(cm, inner)` (orders inner solvers to match the internal operator order).
+
+Two mechanisms:
+- **Alias** (`alias(:A => :d, :B => :x; owner = :A)`) — `A.d` and `B.x` share one global slot. **Hard-discard**: only the owner's equation drives the slot; the non-owner's operator zeroes the aliased state's derivative (freezing it through the substep), so it reads the value but never writes it.
+- **Cross-ref** (`crossref(:A => :Vm, :B => :Vm_ext)`) — before `B` steps, an OS synchronizer copies `A`'s `Vm` into `B`'s parameter slot `:Vm_ext`, which `B`'s functor reads. The receiver must expose a writable `parameters` slot (the only authoring change coupling imposes).
+
+Layout naming: the first component's states keep bare names; others are prefixed (`:B_y`); aliased slots take the owner's name (or an explicit `name=`). Design + decisions in `coupling-redesign.md`; runnable demo in `examples/coupling_toy.jl`.
+
 ### Native adherence vs. ext fallback
 
 Two integration patterns for model packages:
@@ -65,9 +75,11 @@ Two integration patterns for model packages:
 
 ### Extensions
 
-Two package extensions:
+Three package extensions:
 
 **SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel`.
+
+**CouplingExt** (`ext/CouplingExt.jl`) — loaded when `OrdinaryDiffEqOperatorSplitting` (+ SciMLBase) is available. Adds operator-splitting solving for `CoupledModel` (see Coupling above).
 
 **ThunderboltExt** (`ext/ThunderboltExt.jl`) — Thunderbolt's `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel` as an adapter with an optional `overrides` field. Users call `thunderbolt_model(model; overrides=nothing)` (stub in base, implemented in ext). The extension constructs `SpatialContext(x, overrides)` from the mesh position internally.
 
