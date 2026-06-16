@@ -7,6 +7,25 @@ Every concrete model must implement:
 - [`num_parameters`](@ref)
 - [`transmembrane_potential_index`](@ref)
 - [`default_initial_state`](@ref)
+
+# Element-type genericity
+
+A model's RHS must compute in the element type of its state vector, so a `Float32`
+model runs end-to-end in `Float32` — no `Float64` intermediates leaking in from
+numeric literals — which keeps the same code `Float64`- and GPU-compatible. The
+convention (reference implementation: `_torord_rhs_impl!` in
+`src/models/torord/rhs.jl`):
+
+- **Derive the working type `T` from the signature.** Write the internal RHS as
+  `f!(du::AbstractVector{T}, u::AbstractVector{T}, parameters::AbstractVector, …) where {T}`.
+- **Wrap every numeric literal in `T(...)`:** `GNa = T(1.7) * T(11.7802)`, never
+  `1.7 * 11.7802`. A bare `Float64` literal promotes the whole expression back to
+  `Float64`.
+- **Guard integer division:** `Int / Int` returns `Float64` regardless of `T`
+  (`1 / 2 === 0.5`). Write `T(1) / T(2)` or `T(0.5)`.
+- **Known caveat (not a bug):** for a `Float32` base `x` and non-integer `Float32`
+  exponent `y`, Base computes `x^y` through a `Float64` `log2`/`exp2` scratch and
+  narrows back to `Float32`. This is unavoidable and does not violate the convention.
 """
 abstract type AbstractCellModel end
 
