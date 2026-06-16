@@ -17,17 +17,17 @@ function (::_ExtToyA)(du, u, p, t)
     return nothing
 end
 
-# Toy component B: inert (no dynamics). Used to check the shared slot is driven by the
-# alias owner's equation, not the non-owner's.
+# Toy component B with a *competing* equation for the shared state (`du(x) = +10`) that
+# hard-discard must throw away, plus `y` that reads the shared value (`du(y) = -x`).
 struct _ExtToyB <: CytoZoo.AbstractCellModel end
 CytoZoo.num_states(::_ExtToyB) = 2
 CytoZoo.state_names(::_ExtToyB) = (:x, :y)
-CytoZoo.default_initial_state(::_ExtToyB) = [5.0, 7.0]
+CytoZoo.default_initial_state(::_ExtToyB) = [99.0, 0.0]   # x IC ignored — owner supplies the shared slot
 CytoZoo.state_index(::_ExtToyB, n::Symbol) = findfirst(==(n), (:x, :y))
 CytoZoo.transmembrane_potential_index(::_ExtToyB) = 1
 function (::_ExtToyB)(du, u, p, t)
-    du[1] = 0.0
-    du[2] = 0.0
+    du[1] = 10.0      # discarded for the shared slot (owner A governs it)
+    du[2] = -u[1]     # y reads the shared value
     return nothing
 end
 
@@ -40,13 +40,15 @@ end
     @test integ.u[state_index(cm, :d)] ≈ exp(-1.0) rtol = 1e-4
 end
 
-@testset "CouplingExt — alias shares a slot, driven by owner dynamics" begin
+@testset "CouplingExt — alias is hard-discard (owner equation only)" begin
     cm = couple((A = _ExtToyA(), B = _ExtToyB()); aliases = [alias(:A => :d, :B => :x; owner = :A)])
     @test num_states(cm) == 3
-    @test default_initial_state(cm) == [0.0, 1.0, 7.0]      # d from owner A; B's y appended
+    @test default_initial_state(cm) == [0.0, 1.0, 0.0]          # shared d from owner A; B's y appended
     prob = OperatorSplittingProblem(cm, (0.0, 1.0))
-    integ = init(prob, coupled_algorithm(cm, Tsit5()); dt = 0.01, adaptive = false)
+    integ = init(prob, coupled_algorithm(cm, Tsit5()); dt = 0.005, adaptive = false)
     solve!(integ)
-    @test integ.u[state_index(cm, :d)] ≈ exp(-1.0) rtol = 1e-4   # owner A decays the shared slot
-    @test integ.u[state_index(cm, :B_y)] ≈ 7.0 atol = 1e-8       # B inert
+    # shared slot follows ONLY owner A's decay; B's du(x) = +10 is discarded
+    @test integ.u[state_index(cm, :d)] ≈ exp(-1.0) rtol = 1e-3
+    # B read the owner-governed shared value (x = d): dy = -d ⇒ y(1) = exp(-1) - 1
+    @test integ.u[state_index(cm, :B_y)] ≈ (exp(-1.0) - 1.0) atol = 2e-2
 end
