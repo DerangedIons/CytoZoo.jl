@@ -31,21 +31,29 @@ function (::_ExtToyB)(du, u, p, t)
     return nothing
 end
 
-@testset "CouplingExt — single component matches analytic" begin
-    cm = couple((A = _ExtToyA(),))
+@testset "CouplingExt — single node matches analytic" begin
+    cm = couple([Subsystem(_ExtToyA(), Tsit5(); name = :A)])
     prob = OperatorSplittingProblem(cm, (0.0, 1.0))
-    integ = init(prob, coupled_algorithm(cm, Tsit5()); dt = 0.01, adaptive = false)
+    integ = init(prob, coupled_algorithm(cm); dt = 0.01, adaptive = false)
     solve!(integ)
     @test integ.u[state_index(cm, :v)] ≈ 0.0 atol = 1e-8
     @test integ.u[state_index(cm, :d)] ≈ exp(-1.0) rtol = 1e-4
 end
 
-@testset "CouplingExt — alias is hard-discard (owner equation only)" begin
-    cm = couple((A = _ExtToyA(), B = _ExtToyB()); aliases = [alias(:A => :d, :B => :x; owner = :A)])
+@testset "CouplingExt — missing inner solver errors" begin
+    cm = couple([Subsystem(_ExtToyA(); name = :A)])      # no alg passed to the node
+    @test_throws ArgumentError coupled_algorithm(cm)
+end
+
+@testset "CouplingExt — share is hard-discard (owner equation only)" begin
+    cm = couple(
+        [Subsystem(_ExtToyA(), Tsit5(); name = :A), Subsystem(_ExtToyB(), Tsit5(); name = :B)],
+        [share(:A => :d, :B => :x; owner = :A)],
+    )
     @test num_states(cm) == 3
     @test default_initial_state(cm) == [0.0, 1.0, 0.0]          # shared d from owner A; B's y appended
     prob = OperatorSplittingProblem(cm, (0.0, 1.0))
-    integ = init(prob, coupled_algorithm(cm, Tsit5()); dt = 0.005, adaptive = false)
+    integ = init(prob, coupled_algorithm(cm); dt = 0.005, adaptive = false)
     solve!(integ)
     # shared slot follows ONLY owner A's decay; B's du(x) = +10 is discarded
     @test integ.u[state_index(cm, :d)] ≈ exp(-1.0) rtol = 1e-3
@@ -53,7 +61,7 @@ end
     @test integ.u[state_index(cm, :B_y)] ≈ (exp(-1.0) - 1.0) atol = 2e-2
 end
 
-# Cross-ref source: constant Vm = 2.0. Receiver reads it via a parameter slot.
+# Connect source: constant Vm = 2.0. Receiver reads it via a parameter slot.
 struct _RefSrc <: CytoZoo.AbstractCellModel end
 CytoZoo.num_states(::_RefSrc) = 2
 CytoZoo.state_names(::_RefSrc) = (:Vm, :w)
@@ -63,7 +71,7 @@ CytoZoo.transmembrane_potential_index(::_RefSrc) = 1
 (::_RefSrc)(du, u, p, t) = (du[1] = 0.0; du[2] = 0.0; nothing)
 
 struct _RefRecv <: CytoZoo.AbstractCellModel
-    parameters::Vector{Float64}     # one slot :Vm_ext, fed by the synchronizer
+    parameters::Vector{Float64}     # one slot :Vm_ext, fed by the connect edge
 end
 _RefRecv() = _RefRecv([0.0])
 CytoZoo.num_states(::_RefRecv) = 1
@@ -74,18 +82,54 @@ CytoZoo.transmembrane_potential_index(::_RefRecv) = 1
 CytoZoo.parameter_index(::_RefRecv, n::Symbol) = n === :Vm_ext ? 1 : nothing
 (m::_RefRecv)(du, u, p, t) = (du[1] = m.parameters[1]; nothing)   # z integrates the synced Vm
 
-@testset "CouplingExt — cross-ref feeds a source state into a receiver param" begin
+@testset "CouplingExt — connect feeds a source state into a receiver param" begin
     recv = _RefRecv()
-    cm = couple((A = _RefSrc(), B = recv); refs = [crossref(:A => :Vm, :B => :Vm_ext)])
+    cm = couple(
+        [Subsystem(_RefSrc(), Tsit5(); name = :A), Subsystem(recv, Tsit5(); name = :B)],
+        [connect(:A => :Vm, :B => :Vm_ext)],
+    )
     @test num_states(cm) == 3                              # Vm, w, B_z
     prob = OperatorSplittingProblem(cm, (0.0, 1.0))
-    integ = init(prob, coupled_algorithm(cm, Tsit5()); dt = 0.1, adaptive = false)
+    integ = init(prob, coupled_algorithm(cm); dt = 0.1, adaptive = false)
     solve!(integ)
     @test integ.u[state_index(cm, :B_z)] ≈ 2.0 rtol = 1e-6  # z = ∫ Vm dt = 2·1, Vm constant 2
-    @test recv.parameters[1] ≈ 2.0                          # synchronizer wrote Vm into the receiver param
+    @test recv.parameters[1] ≈ 2.0                          # connect edge wrote Vm into the receiver param
 end
 
-# Convergence toy: A's `a` decays (a = exp(-t)); B integrates it via a cross-ref. The exact
+# Sum (op = +): two source states summed into one receiver parameter slot each step.
+struct _SumSrc <: CytoZoo.AbstractCellModel end
+CytoZoo.num_states(::_SumSrc) = 2
+CytoZoo.state_names(::_SumSrc) = (:p, :q)
+CytoZoo.default_initial_state(::_SumSrc) = [2.0, 3.0]
+CytoZoo.state_index(::_SumSrc, n::Symbol) = findfirst(==(n), (:p, :q))
+CytoZoo.transmembrane_potential_index(::_SumSrc) = 1
+(::_SumSrc)(du, u, p, t) = (du[1] = 0.0; du[2] = 0.0; nothing)   # p, q held constant at 2, 3
+
+struct _SumRecv <: CytoZoo.AbstractCellModel
+    parameters::Vector{Float64}     # one slot :s, fed by two summed connect edges
+end
+_SumRecv() = _SumRecv([0.0])
+CytoZoo.num_states(::_SumRecv) = 1
+CytoZoo.state_names(::_SumRecv) = (:acc,)
+CytoZoo.default_initial_state(::_SumRecv) = [0.0]
+CytoZoo.state_index(::_SumRecv, n::Symbol) = findfirst(==(n), (:acc,))
+CytoZoo.transmembrane_potential_index(::_SumRecv) = 1
+CytoZoo.parameter_index(::_SumRecv, n::Symbol) = n === :s ? 1 : nothing
+(m::_SumRecv)(du, u, p, t) = (du[1] = m.parameters[1]; nothing)   # acc integrates the summed slot
+
+@testset "CouplingExt — connect op = + sums sources into one slot" begin
+    recv = _SumRecv()
+    cm = couple(
+        [Subsystem(_SumSrc(), Tsit5(); name = :A), Subsystem(recv, Tsit5(); name = :B)],
+        [connect(:A => :p, :B => :s; op = +), connect(:A => :q, :B => :s; op = +)],
+    )
+    integ = init(OperatorSplittingProblem(cm, (0.0, 1.0)), coupled_algorithm(cm); dt = 0.1, adaptive = false)
+    solve!(integ)
+    @test recv.parameters[1] ≈ 5.0                              # 2 + 3, reset-and-summed each step
+    @test integ.u[state_index(cm, :B_acc)] ≈ 5.0 rtol = 1e-6   # ∫₀¹ (p + q) dt = 5
+end
+
+# Convergence toy: A's `a` decays (a = exp(-t)); B integrates it via a connect edge. The exact
 # b(1) = ∫₀¹ exp(-t) dt = 1 - exp(-1). Splitting freezes `a` per step ⇒ O(dt) (1st-order) error.
 struct _ConvA <: CytoZoo.AbstractCellModel end
 CytoZoo.num_states(::_ConvA) = 1
@@ -109,8 +153,11 @@ CytoZoo.parameter_index(::_ConvB, n::Symbol) = n === :a_in ? 1 : nothing
 
 @testset "CouplingExt — LT-G shows ~1st-order convergence" begin
     function solve_b(dt)
-        cm = couple((A = _ConvA(), B = _ConvB()); refs = [crossref(:A => :a, :B => :a_in)])
-        integ = init(OperatorSplittingProblem(cm, (0.0, 1.0)), coupled_algorithm(cm, Tsit5()); dt = dt, adaptive = false)
+        cm = couple(
+            [Subsystem(_ConvA(), Tsit5(); name = :A), Subsystem(_ConvB(), Tsit5(); name = :B)],
+            [connect(:A => :a, :B => :a_in)],
+        )
+        integ = init(OperatorSplittingProblem(cm, (0.0, 1.0)), coupled_algorithm(cm); dt = dt, adaptive = false)
         solve!(integ)
         return integ.u[state_index(cm, :B_b)]
     end
@@ -122,7 +169,10 @@ CytoZoo.parameter_index(::_ConvB, n::Symbol) = n === :a_in ? 1 : nothing
 end
 
 @testset "CouplingExt — operators allocate nothing in the hot path" begin
-    cm = couple((A = _ExtToyA(), B = _ExtToyB()); aliases = [alias(:A => :d, :B => :x; owner = :A)])
+    cm = couple(
+        [Subsystem(_ExtToyA(), Tsit5(); name = :A), Subsystem(_ExtToyB(), Tsit5(); name = :B)],
+        [share(:A => :d, :B => :x; owner = :A)],
+    )
     gsf = build_split_function(cm)
     for (i, ck) in enumerate(cm.layout.operator_order)
         op = gsf.functions[i].f                  # the ComponentOperator inside the ODEFunction
