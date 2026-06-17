@@ -5,10 +5,10 @@
 <h1 align="center">CytoZoo.jl</h1>
 
 <p align="center">
-  <a href="https://kylebeggs.github.io/CytoZoo.jl/stable/"><img src="https://img.shields.io/badge/docs-stable-blue.svg" alt="Stable"></a>
-  <a href="https://kylebeggs.github.io/CytoZoo.jl/dev/"><img src="https://img.shields.io/badge/docs-dev-blue.svg" alt="Dev"></a>
-  <a href="https://github.com/kylebeggs/CytoZoo.jl/actions/workflows/CI.yml?query=branch%3Amain"><img src="https://github.com/kylebeggs/CytoZoo.jl/actions/workflows/CI.yml/badge.svg?branch=main" alt="Build Status"></a>
-  <a href="https://codecov.io/gh/kylebeggs/CytoZoo.jl"><img src="https://codecov.io/gh/kylebeggs/CytoZoo.jl/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://derangedions.github.io/CytoZoo.jl/stable/"><img src="https://img.shields.io/badge/docs-stable-blue.svg" alt="Stable"></a>
+  <a href="https://derangedions.github.io/CytoZoo.jl/dev/"><img src="https://img.shields.io/badge/docs-dev-blue.svg" alt="Dev"></a>
+  <a href="https://github.com/DerangedIons/CytoZoo.jl/actions/workflows/CI.yml?query=branch%3Amain"><img src="https://github.com/DerangedIons/CytoZoo.jl/actions/workflows/CI.yml/badge.svg?branch=main" alt="Build Status"></a>
+  <a href="https://codecov.io/gh/DerangedIons/CytoZoo.jl"><img src="https://codecov.io/gh/DerangedIons/CytoZoo.jl/branch/main/graph/badge.svg" alt="Coverage"></a>
 </p>
 
 A Julia package providing a registry of cardiac cell models with a common functor-based interface. Models work standalone with [DifferentialEquations.jl](https://github.com/SciML/DifferentialEquations.jl) and integrate with [Thunderbolt.jl](https://github.com/termi-official/Thunderbolt.jl) for tissue-level simulation via a package extension.
