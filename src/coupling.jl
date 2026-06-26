@@ -1,39 +1,36 @@
-# Operator-splitting model coupling.
+# Model coupling.
 #
-# This file is pure Julia (no OrdinaryDiffEqOperatorSplitting dependency): it builds a
-# `CoupledModel` and the global-state layout that the OS-based solver in
-# `ext/CouplingExt.jl` consumes. Layout, naming, and interface queries are fully testable
-# without solving.
+# This file is pure Julia (no solver dependency): it builds a `CoupledModel`, computes the
+# global-state layout, and assembles the monolithic single-RHS functor that solves it. Layout,
+# naming, interface queries, and the assembled RHS are all testable without a solver; the actual
+# solve goes through `ODEProblem(cm, tspan)` + `solve` (ext/SciMLBaseExt.jl).
 #
-# Coupling is expressed as a graph: `Subsystem` nodes (a model + its solver) joined by
-# directed edges. Two edge kinds:
+# Coupling is expressed as a graph: `Subsystem` nodes (a model) joined by directed edges. Two
+# edge kinds:
 #   - `share`   — two states are one variable (one global slot; the `owner`'s equation governs).
 #   - `connect` — a directed dataflow edge carrying an operation (copy by default): a source
 #     state is written into a receiver's parameter slot before the receiver steps.
 
 """
-    Subsystem(model, alg = nothing; name = gensym(:subsystem))
+    Subsystem(model; name = gensym(:subsystem))
 
-A graph node: a component `model` (any `AbstractCellModel`) paired with the inner `alg` used
-to step it under operator splitting, plus a `name` used to reference it in edges. `alg` may
-be `nothing` for pure layout/query work (no solving); `coupled_algorithm` then errors if
-asked to solve. Pass an explicit `name` whenever edges reference the node — the `gensym`
-default is only ergonomic for a single-node graph.
+A graph node: a component `model` (any `AbstractCellModel`) plus a `name` used to reference it
+in edges. Pass an explicit `name` whenever edges reference the node — the `gensym` default is
+only ergonomic for a single-node graph.
 """
-struct Subsystem{M, A}
+struct Subsystem{M}
     name::Symbol
     model::M
-    alg::A
 end
-Subsystem(model, alg = nothing; name::Symbol = gensym(:subsystem)) = Subsystem(name, model, alg)
+Subsystem(model; name::Symbol = gensym(:subsystem)) = Subsystem(name, model)
 
 """
     ShareSpec
 
 One `share` edge: state `a_state` of component `a` and state `b_state` of component `b` are
 the same physical quantity, sharing a single global state slot. `owner` (`a` or `b`) wins the
-equation (enforced by operator order in the splitting solver) and supplies the canonical name
-and initial value. Build with [`share`](@ref).
+equation (its write into the shared slot is final, by owner-last operator order) and supplies
+the canonical name and initial value. Build with [`share`](@ref).
 """
 struct ShareSpec
     a::Symbol
@@ -101,8 +98,11 @@ Use one op per slot; mixing `overwrite` and `+` into the same slot is not meanin
 `op`s are not supported.
 """
 function connect(src_pair::Pair{Symbol, Symbol}, dst_pair::Pair{Symbol, Symbol}; op = overwrite)
-    op in (overwrite, +) || throw(ArgumentError(
-        "connect: op must be `overwrite` (copy) or `+` (sum into the slot); got $op"))
+    op in (overwrite, +) || throw(
+        ArgumentError(
+            "connect: op must be `overwrite` (copy) or `+` (sum into the slot); got $op"
+        )
+    )
     return ConnectSpec(src_pair.first, src_pair.second, dst_pair.first, dst_pair.second, op)
 end
 
@@ -112,7 +112,7 @@ end
 Pre-computed global state layout for a [`CoupledModel`]. Fields:
 - `num_states` — number of distinct global slots.
 - `solution_indices` — `NamedTuple` mapping each component key to its global index vector,
-  in the component's own local state order (what the splitting solver gathers/scatters).
+  in the component's own local state order (the global slots each component writes its `view` of `dU`/`U` into).
 - `names` — canonical name per global slot.
 - `name_to_index` — reverse lookup.
 - `u0` — default initial global state.
@@ -134,21 +134,23 @@ end
 
 Composition of two or more `AbstractCellModel`s into one combined model with a shared global
 state vector. `share` edges merge two states into one slot; `connect` edges let one component
-read another's state through a parameter slot. Build with [`couple`](@ref) and solve via
-`OperatorSplittingProblem(coupled, tspan)` (available once `OrdinaryDiffEqOperatorSplitting`
-is loaded).
+read another's state through a parameter slot. Build with [`couple`](@ref).
 
-A `CoupledModel` implements the layout/query interface (`num_states`, [`state_names`](@ref),
+A `CoupledModel` is a callable `f(dU, U, p, t)` assembled from its submodels, so it is solved
+monolithically with a single ODE solver via `ODEProblem(cm, tspan)` + `solve` (requires a
+SciMLBase solver stack such as OrdinaryDiffEq). One solver over the full coupled system means no
+splitting error and lets a stiff coupling use an implicit method.
+
+It also implements the layout/query interface (`num_states`, [`state_names`](@ref),
 [`state_index`](@ref), [`default_initial_state`](@ref),
-[`transmembrane_potential_index`](@ref)) so couplings nest, but it is **not** a direct functor
-— it is integrated by operator splitting, not a single RHS.
+[`transmembrane_potential_index`](@ref)) so couplings nest.
 """
-struct CoupledModel{Cs <: NamedTuple, AL <: NamedTuple, SS <: Tuple, CS <: Tuple, L <: CouplingLayout} <: AbstractCardiacCellModel
+struct CoupledModel{Cs <: NamedTuple, SS <: Tuple, CS <: Tuple, L <: CouplingLayout, PL <: Tuple} <: AbstractCardiacCellModel
     components::Cs
-    algs::AL
     shares::SS
     connects::CS
     layout::L
+    plan::PL
 end
 
 """
@@ -164,19 +166,22 @@ function couple(nodes, edges = ())
     isempty(nodes) && throw(ArgumentError("couple requires at least one Subsystem node"))
     subsystems = _subsystems_namedtuple(nodes)
     components = map(s -> s.model, subsystems)
-    algs = map(s -> s.alg, subsystems)
     shares, connects = _split_edges(edges)
     _validate_specs(components, shares, connects)
     layout = _compute_layout(components, shares)
-    return CoupledModel(components, algs, shares, connects, layout)
+    plan = _build_plan(components, shares, connects, layout)
+    return CoupledModel(components, shares, connects, layout, plan)
 end
 
 # Build a NamedTuple keyed by each node's name, erroring on duplicates before the build.
 function _subsystems_namedtuple(nodes)
     names = Symbol[]
     for n in nodes
-        n.name in names && throw(ArgumentError(
-            "duplicate subsystem name :$(n.name); give each Subsystem a distinct name="))
+        n.name in names && throw(
+            ArgumentError(
+                "duplicate subsystem name :$(n.name); give each Subsystem a distinct name="
+            )
+        )
         push!(names, n.name)
     end
     return NamedTuple{Tuple(names)}(Tuple(nodes))
@@ -192,8 +197,11 @@ function _split_edges(edges)
         elseif e isa ConnectSpec
             push!(connects, e)
         else
-            throw(ArgumentError(
-                "unknown edge type $(typeof(e)); expected a share(...) or connect(...) spec"))
+            throw(
+                ArgumentError(
+                    "unknown edge type $(typeof(e)); expected a share(...) or connect(...) spec"
+                )
+            )
         end
     end
     return Tuple(shares), Tuple(connects)
@@ -330,6 +338,95 @@ function _operator_order(comp_keys::NTuple{N, Symbol}, shares::Tuple) where {N}
     return order
 end
 
+# --- monolithic single-RHS assembly ---
+#
+# Assemble one combined f(dU, U, p, t) from the submodels: each component writes into its own
+# view of the shared dU/U, connect inputs are read live from U into receiver parameter slots,
+# and non-owned shared-slot derivatives are zeroed so the owner's write (last, by operator
+# order) governs. The plan is built once at couple() time and stored concretely-typed on the
+# CoupledModel so the functor specializes and stays allocation-free.
+
+"""
+    CompEntry
+
+One component's pre-resolved execution entry in a [`CoupledModel`](@ref)'s monolithic plan.
+`block` is the component's slice of the global state (a `UnitRange` when contiguous, else an
+index vector); `frozen` are local indices of shared states it does not own (zeroed after its
+functor, so the owner's write wins); `overwrites`/`adds` are connect edges resolved to
+`(src_global_index, dst_param_index)`; `params` is the receiver's parameter vector, or `nothing`
+when it has no incoming connect edges.
+"""
+struct CompEntry{M, B, P, F, OW, AD}
+    model::M
+    block::B
+    params::P
+    frozen::F
+    overwrites::OW
+    adds::AD
+end
+
+# Identity in base — zero overhead on the Float64 / explicit-solver path. `ext/ForwardDiffExt.jl`
+# overrides this for `Dual`s, extracting the primal so a connect input is never stored as a Dual
+# in a component's Float64 parameter slot under an implicit solver (it is frozen to its current
+# value within the Newton step: correct fixed point, approximate Jacobian).
+_connect_value(x) = x
+
+# Build a concretely-typed tuple of entries in operator order (recursion keeps element types
+# concrete → the functor specializes and stays allocation-free on the contiguous-block case).
+_build_plan(components, shares, connects, layout) =
+    _entries(components, shares, connects, layout, layout.operator_order, 1)
+
+_entries(components, shares, connects, layout, order, i) =
+    i > length(order) ? () :
+    (
+        _entry(components, shares, connects, layout, order[i]),
+        _entries(components, shares, connects, layout, order, i + 1)...,
+    )
+
+function _entry(components, shares, connects, layout, ck)
+    si = layout.solution_indices
+    idxs = si[ck]
+    block = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
+    frozen = _frozen_indices(components, shares, ck)
+    ow_l, ad_l = _connect_plan(components, connects, ck)
+    toglobal(e) = (si[e[1]][e[2]], e[3])   # (src_sym, src_local, dst_param) -> (src_global, dst_param)
+    overwrites = map(toglobal, ow_l) |> Tuple
+    adds = map(toglobal, ad_l) |> Tuple
+    params = (isempty(ow_l) && isempty(ad_l)) ? nothing : components[ck].parameters
+    return CompEntry(components[ck], block, params, frozen, overwrites, adds)
+end
+
+# Evaluate the assembled RHS: walk the plan (fully unrolled), each component staging its connect
+# inputs, writing into its view of dU/U, then zeroing its non-owned shared-slot derivatives.
+_run!(dU, U, p, t, ::Tuple{}) = nothing
+function _run!(dU, U, p, t, plan)
+    e = first(plan)
+    _connect!(U, e.params, e.overwrites, e.adds)
+    e.model(view(dU, e.block), view(U, e.block), p, t)
+    @inbounds for i in e.frozen
+        dU[e.block[i]] = zero(eltype(dU))
+    end
+    return _run!(dU, U, p, t, Base.tail(plan))
+end
+
+# Stage connect inputs: read source states live from U into the receiver's parameter slots
+# (overwrite = copy, + = cross-sectional sum reset to zero then accumulated each eval).
+_connect!(U, ::Nothing, ::Tuple{}, ::Tuple{}) = nothing
+function _connect!(U, params, overwrites, adds)
+    @inbounds begin
+        for (_, d) in adds
+            params[d] = zero(eltype(params))
+        end
+        for (s, d) in overwrites
+            params[d] = _connect_value(U[s])
+        end
+        for (s, d) in adds
+            params[d] += _connect_value(U[s])
+        end
+    end
+    return nothing
+end
+
 # --- AbstractCellModel interface (layout/query methods) ---
 
 num_states(cm::CoupledModel) = cm.layout.num_states
@@ -338,30 +435,45 @@ state_names(cm::CoupledModel) = Tuple(cm.layout.names)
 state_index(cm::CoupledModel, name::Symbol) = get(cm.layout.name_to_index, name, nothing)
 transmembrane_potential_index(cm::CoupledModel) = cm.layout.vm_index
 
-# A CoupledModel is solved by operator splitting, not as a single RHS.
-(::CoupledModel)(du, u, p, t) = throw(
-    ArgumentError("CoupledModel is integrated by operator splitting; build OperatorSplittingProblem(coupled, tspan) and solve (requires OrdinaryDiffEqOperatorSplitting)")
-)
+# Monolithic single-RHS: evaluate every component into the shared dU/U in operator order. This
+# is the default solve path — `ODEProblem(cm, tspan)` + `solve` (see ext/SciMLBaseExt.jl).
+(cm::CoupledModel)(dU, U, p, t) = (_run!(dU, U, p, t, cm.plan); nothing)
 num_parameters(::CoupledModel) = throw(
     ArgumentError("CoupledModel has no single parameter vector; parameters live on each component")
 )
 
-# Solving entry points — methods are added in ext/CouplingExt.jl, which requires
-# OrdinaryDiffEqOperatorSplitting to be loaded.
-"""
-    build_split_function(cm::CoupledModel)
+# --- coupling-semantics helpers (consumed by the monolithic plan builder) ---
 
-Build the `GenericSplitFunction` (operators in owner-last order, with the global
-`solution_indices`) for `cm`. Requires `OrdinaryDiffEqOperatorSplitting`.
-"""
-function build_split_function end
+# Local state indices `ck` participates in via a share but does not own (used by the monolithic
+# plan to zero the non-owner's contribution to a shared slot, so the owner's write wins).
+function _frozen_indices(components::NamedTuple, shares::Tuple, ck::Symbol)
+    snames = state_names(components[ck])
+    frozen = Int[]
+    for sh in shares
+        sh.owner === ck && continue
+        if sh.a === ck
+            push!(frozen, findfirst(==(sh.a_state), snames))
+        elseif sh.b === ck
+            push!(frozen, findfirst(==(sh.b_state), snames))
+        end
+    end
+    return Tuple(frozen)
+end
 
-"""
-    coupled_algorithm(cm::CoupledModel; scheme = LieTrotterGodunov)
-
-Build a splitting algorithm whose inner solvers — read off each [`Subsystem`](@ref) node —
-are ordered to match `cm`'s internal operator order, so callers never have to know that
-order. Errors if any participating node was built without a solver. Requires
-`OrdinaryDiffEqOperatorSplitting`.
-"""
-function coupled_algorithm end
+# Resolve the connect edges targeting `ck` into (overwrites, adds), each a vector of
+# (src::Symbol, src_local::Int, dst_param::Int) tuples partitioned by op. The source is named as
+# (component, local state index); `_entry` maps it to a global-state index via `solution_indices`
+# when building the plan. Partitioning by op keeps the per-eval write homogeneous (no dispatch).
+function _connect_plan(components::NamedTuple, connects::Tuple, ck::Symbol)
+    overwrites = Tuple{Symbol, Int, Int}[]
+    adds = Tuple{Symbol, Int, Int}[]
+    for cn in connects
+        cn.dst === ck || continue
+        entry = (
+            cn.src, state_index(components[cn.src], cn.src_state),
+            parameter_index(components[ck], cn.dst_slot),
+        )
+        cn.op === (+) ? push!(adds, entry) : push!(overwrites, entry)
+    end
+    return overwrites, adds
+end

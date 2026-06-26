@@ -166,27 +166,26 @@ ionic = thunderbolt_model(model; overrides)
 
 ## Coupling
 
-Compose two or more models into one combined model and solve it by operator splitting. Coupling is a graph: **`Subsystem`** nodes (a model + its inner solver) joined by directed **edges**. Requires `OrdinaryDiffEqOperatorSplitting` loaded; it is a weak dependency, so the base package stays dependency-free.
+Compose two or more models into one combined model with a shared global state. Coupling is a graph: **`Subsystem`** nodes (a model) joined by directed **edges**. A `CoupledModel` is a real callable `f(dU, U, p, t)` assembled from its submodels, so it is solved monolithically with a single ODE solver — no splitting error, and a stiff coupling can use one implicit method over the whole system. This needs only a SciMLBase solver stack (e.g. `OrdinaryDiffEq`); the base package stays dependency-free.
 
 ```julia
-using CytoZoo, OrdinaryDiffEqOperatorSplitting, OrdinaryDiffEq
+using CytoZoo, OrdinaryDiffEq
 
 coupled = couple(
-    [Subsystem(ModelA(), Tsit5(); name = :A),
-     Subsystem(ModelB(), Tsit5(); name = :B)],
+    [Subsystem(ModelA(); name = :A),
+     Subsystem(ModelB(); name = :B)],
     [ share(:A => :d, :B => :x; owner = :A),   # A.d ≡ B.x — A's equation governs the shared state
       connect(:A => :Vm, :B => :Vm_ext) ],     # B reads A's Vm through its :Vm_ext parameter slot
 )
 
-prob  = OperatorSplittingProblem(coupled, (0.0, 1000.0))
-integ = init(prob, coupled_algorithm(coupled); dt = 0.05, adaptive = false)   # solvers read off the nodes
-solve!(integ)
-integ.u[state_index(coupled, :d)]    # value of the shared state at the final time
+prob = ODEProblem(coupled, (0.0, 1000.0))
+sol  = solve(prob, Rodas5P())                  # one solver over the full coupled system
+sol.u[end][state_index(coupled, :d)]           # value of the shared state at the final time
 ```
 
 Two edge kinds, freely mixed in the edge list:
 
 - **`share`** — two states are the *same* variable (one global slot); the `owner`'s equation governs it (the other's is discarded), while the non-owner still reads the value. Zero authoring change.
-- **`connect`** — a directed dataflow edge: a source state is written into a receiver's parameter slot before the receiver steps, so the receiver reads it as an input. The receiver must expose that writable slot. Carries an operation `op`: `overwrite` (default, copy) or `+` to sum several edges into one slot (reset to zero then summed each step).
+- **`connect`** — a directed dataflow edge: a source state is written into a receiver's parameter slot before the receiver steps, so the receiver reads it as an input. The receiver must expose that writable slot. Carries an operation `op`: `overwrite` (default, copy) or `+` to sum several edges into one slot (reset to zero then summed each eval). Under an implicit solver, `connect` inputs are frozen to their current value within the Newton step (handled by the `ForwardDiff` extension, which implicit solvers pull in automatically).
 
 `CoupledModel` is itself an `AbstractCardiacCellModel`, so couplings nest. See [`examples/coupling_toy.jl`](examples/coupling_toy.jl) for a runnable demo.
