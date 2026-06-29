@@ -67,6 +67,10 @@ Two edge kinds (freely mixed in the edge list):
 
 Layout naming: the first component's states keep bare names; others are prefixed (`:B_y`); shared slots take the owner's name (or an explicit `name=`). Design + decisions in `handoffs/2026-06-25-1515-coupling-monolithic-rhs.md`; runnable demo in `examples/coupling_toy.jl`.
 
+### Derived observables (monitors)
+
+DERIVED-mode quantities — algebraic functions of the state (e.g. conservation laws like `ATPm = C_A − ADPm`) — are surfaced as observables via the optional monitor hooks in `src/interface.jl`: `num_monitors` (default `0`), `monitor_names` (default `()`, mirrors `state_names`), and `monitor_values!(mon, u, t, model)` (no `p` arg — reads params from the struct). A model opts in by overriding all three. Surfaced **post-solve** by `monitor_history(sol, model)` (`ext/SciMLBaseExt.jl`) → `(; t, names, values::Matrix)` (rows = monitors, cols = `sol.t`); post-solve because the saved `sol.u` is plain (no `Dual`s), so it sidesteps `_connect_value` entirely. `CoupledModel` aggregates: `num_monitors` sums over components, `monitor_names` concatenates with the same non-primary `:<comp>_<name>` prefixing as states, and `monitor_values!` slices each component's own state (`layout.solution_indices[ck]`) — both walk `keys(cm.components)` (declaration order, not operator order) so names and values stay aligned. A 0-monitor model yields a `0×N` matrix without error. **Not ported:** ToRORd's ~492 ArmyHeart monitors (`TORORD_NUM_MONITORS = 0`). **Module switches** (gating whole subsystems) are a separate, unimplemented concern being reframed as graph surgery — see `handoffs/2026-06-29-1259-cytozoo-switches-graph-surgery.md`.
+
 ### Native adherence vs. ext fallback
 
 Two integration patterns for model packages:
@@ -79,7 +83,7 @@ Two integration patterns for model packages:
 
 Package extensions:
 
-**SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel` — the default coupled-solve entry point for a `CoupledModel`.
+**SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds the `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel` (the default coupled-solve entry point for a `CoupledModel`) and the post-solve `monitor_history(sol, model)` helper for DERIVED observables (see Derived observables above).
 
 **ForwardDiffExt** (`ext/ForwardDiffExt.jl`) — loaded when `ForwardDiff` is available (implicit solvers pull it in). Overrides `_connect_value(::Dual)` to extract the primal so a `connect` input is frozen within an implicit solver's Newton step instead of being stored as a `Dual` in the receiver's `Float64` parameter slot (see Coupling above).
 

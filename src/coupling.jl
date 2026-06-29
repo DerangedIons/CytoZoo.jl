@@ -435,6 +435,42 @@ state_names(cm::CoupledModel) = Tuple(cm.layout.names)
 state_index(cm::CoupledModel, name::Symbol) = get(cm.layout.name_to_index, name, nothing)
 transmembrane_potential_index(cm::CoupledModel) = cm.layout.vm_index
 
+# --- DERIVED monitors ---
+#
+# A coupling's monitors are its components' monitors concatenated in component-declaration
+# order (`keys(cm.components)`, NOT operator order). Non-primary components' monitor names are
+# prefixed `:<comp>_<name>`, matching the state-name prefixing in `_compute_layout`. Each
+# component's monitor is computed from its own local state slice (`solution_indices[ck]`, global
+# indices in local order), not the whole merged `U`.
+
+num_monitors(cm::CoupledModel) = sum(num_monitors, values(cm.components))
+
+function monitor_names(cm::CoupledModel)
+    comp_keys = keys(cm.components)
+    primary = first(comp_keys)
+    names = Symbol[]
+    for ck in comp_keys
+        for mn in monitor_names(cm.components[ck])
+            push!(names, ck === primary ? mn : Symbol(ck, :_, mn))
+        end
+    end
+    return Tuple(names)
+end
+
+function monitor_values!(mon, U, t, cm::CoupledModel)
+    si = cm.layout.solution_indices
+    offset = 0
+    for ck in keys(cm.components)
+        model = cm.components[ck]
+        nm = num_monitors(model)
+        if nm > 0
+            monitor_values!(view(mon, (offset + 1):(offset + nm)), view(U, si[ck]), t, model)
+        end
+        offset += nm
+    end
+    return nothing
+end
+
 # Monolithic single-RHS: evaluate every component into the shared dU/U in operator order. This
 # is the default solve path — `ODEProblem(cm, tspan)` + `solve` (see ext/SciMLBaseExt.jl).
 (cm::CoupledModel)(dU, U, p, t) = (_run!(dU, U, p, t, cm.plan); nothing)

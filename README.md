@@ -189,3 +189,21 @@ Two edge kinds, freely mixed in the edge list:
 - **`connect`** — a directed dataflow edge: a source state is written into a receiver's parameter slot before the receiver steps, so the receiver reads it as an input. The receiver must expose that writable slot. Carries an operation `op`: `overwrite` (default, copy) or `+` to sum several edges into one slot (reset to zero then summed each eval). Under an implicit solver, `connect` inputs are frozen to their current value within the Newton step (handled by the `ForwardDiff` extension, which implicit solvers pull in automatically).
 
 `CoupledModel` is itself an `AbstractCardiacCellModel`, so couplings nest. See [`examples/coupling_toy.jl`](examples/coupling_toy.jl) for a runnable demo.
+
+### Derived observables (monitors)
+
+A model can expose **derived quantities** — algebraic functions of the state, e.g.
+conservation-law values like `ATPm = C_A - ADPm` — as observables, by implementing
+`num_monitors`, `monitor_names`, and `monitor_values!(mon, u, t, model)`. After a solve,
+`monitor_history(sol, model)` recomputes them across the trajectory:
+
+```julia
+h = monitor_history(sol, model)   # (; t, names, values)
+h.values[i, :]                    # monitor h.names[i] over time
+```
+
+It returns the time points `t`, the monitor `names`, and a `values` matrix (rows = monitors,
+columns = time points). It is post-solve — the saved solution carries no dual numbers, so it
+works under any solver. For a `CoupledModel`, monitors are its components' monitors
+concatenated (non-primary names prefixed `:<comp>_<name>`, like states), each computed from
+its own component's state slice. A model that implements no monitors yields an empty result.

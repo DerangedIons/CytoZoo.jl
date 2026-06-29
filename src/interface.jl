@@ -119,22 +119,36 @@ or `SpatialContext` for per-cell spatial variation. Only available when
 function rush_larsen_step! end
 
 # ---------------------------------------------------------------------------
-# Internal — monitors (unexported; no model implements these yet)
+# Optional interface — monitors (DERIVED observables)
 # ---------------------------------------------------------------------------
+#
+# Derived/monitored quantities are algebraic functions of the state (e.g. conservation-law
+# values like `ATPm = C_A - ADPm`) surfaced as observables. A model opts in by overriding all
+# three hooks; the post-solve `monitor_history(sol, model)` helper (SciMLBase extension) walks
+# the saved solution and collects them. Defaults make a non-implementing model report zero
+# monitors, so the helper returns an empty result rather than erroring.
 
 """
     num_monitors(model::AbstractCellModel) -> Int
 
-Number of derived/monitored quantities the model can compute. Internal hook —
-not exported until a model ships a real `monitor_values!` implementation.
+Number of derived/monitored quantities the model can compute. Defaults to `0`; override
+alongside [`monitor_names`](@ref) and [`monitor_values!`](@ref) to opt in.
 """
 num_monitors(::AbstractCellModel) = 0
 
 """
+    monitor_names(model::AbstractCellModel) -> NTuple{N, Symbol}
+
+Names of the derived/monitored quantities, in the order [`monitor_values!`](@ref) writes
+them (length `num_monitors(model)`). Defaults to `()`; mirrors [`state_names`](@ref).
+"""
+monitor_names(::AbstractCellModel) = ()
+
+"""
     monitor_values!(mon, u, t, model::AbstractCellModel) -> Nothing
 
-Compute derived quantities from state `u` at time `t` and store in `mon`. Internal
-hook — not exported until a model implements it.
+Compute derived quantities from state `u` at time `t` and store the `num_monitors(model)`
+values in `mon`. Reads parameters from `model` (struct fields), not from a `p` argument.
 """
 function monitor_values! end
 
@@ -179,4 +193,3 @@ position-independent — it must not dereference `x`, so that `s(nothing, t)`
 works. Subtypes that index `x` are only valid under a `SpatialContext`.
 """
 abstract type AbstractStimulus end
-

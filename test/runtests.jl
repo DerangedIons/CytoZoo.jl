@@ -8,6 +8,7 @@ using Test
     include("test_torord.jl")
     include("test_torord_correctness.jl")
     include("test_scimlbase_ext.jl")
+    include("test_monitors.jl")
     if Base.find_package("TWorld") !== nothing
         include("test_tworld.jl")
     else
