@@ -168,6 +168,19 @@ ionic = thunderbolt_model(model; overrides)
 
 Compose two or more models into one combined model with a shared global state. Coupling is a graph: **`Subsystem`** nodes (a model) joined by directed **edges**. A `CoupledModel` is a real callable `f(dU, U, p, t)` assembled from its submodels, so it is solved monolithically with a single ODE solver — no splitting error, and a stiff coupling can use one implicit method over the whole system. This needs only a SciMLBase solver stack (e.g. `OrdinaryDiffEq`); the base package stays dependency-free.
 
+### Variable roles
+
+Every coupled variable has a **role** in the combined system, and coupling **changes its role** when models are composed:
+
+| Role | Meaning | Primitive |
+|---|---|---|
+| state | an integrated variable (has `du/dt`) | a global state slot |
+| parameter | a fixed input | a model's parameter slot |
+| derived | an algebraic function of state (e.g. a conservation law) | monitor hooks → `monitor_history` |
+| input | driven by another model every RHS call | a `connect` edge |
+
+The coupling operations are the role changes: **`share`** identifies two subsystems' states as one slot (the `owner`'s equation governs); **`connect`** turns a parameter into an input driven live by another model's state; **monitors** surface a derived quantity post-solve; **`couple`** composes. There is no separate "switch" to turn a coupling on or off — composing with or without an edge *is* the on/off control.
+
 ```julia
 using CytoZoo, OrdinaryDiffEq
 
