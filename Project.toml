@@ -4,14 +4,17 @@ version = "0.0.1"
 authors = ["Kyle Beggs (beggskw@gmail.com) and contributors"]
 
 [weakdeps]
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 Thunderbolt = "909927c2-98d5-4a67-bba9-79f03a9ad49b"
 
 [extensions]
+ForwardDiffExt = "ForwardDiff"
 SciMLBaseExt = "SciMLBase"
 ThunderboltExt = "Thunderbolt"
 
 [compat]
+ForwardDiff = "0.10, 1"
 OrdinaryDiffEq = "6, 7"
 SciMLBase = "2, 3"
 Test = "1"

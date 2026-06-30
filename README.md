@@ -5,10 +5,10 @@
 <h1 align="center">CytoZoo.jl</h1>
 
 <p align="center">
-  <a href="https://kylebeggs.github.io/CytoZoo.jl/stable/"><img src="https://img.shields.io/badge/docs-stable-blue.svg" alt="Stable"></a>
-  <a href="https://kylebeggs.github.io/CytoZoo.jl/dev/"><img src="https://img.shields.io/badge/docs-dev-blue.svg" alt="Dev"></a>
-  <a href="https://github.com/kylebeggs/CytoZoo.jl/actions/workflows/CI.yml?query=branch%3Amain"><img src="https://github.com/kylebeggs/CytoZoo.jl/actions/workflows/CI.yml/badge.svg?branch=main" alt="Build Status"></a>
-  <a href="https://codecov.io/gh/kylebeggs/CytoZoo.jl"><img src="https://codecov.io/gh/kylebeggs/CytoZoo.jl/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://derangedions.github.io/CytoZoo.jl/stable/"><img src="https://img.shields.io/badge/docs-stable-blue.svg" alt="Stable"></a>
+  <a href="https://derangedions.github.io/CytoZoo.jl/dev/"><img src="https://img.shields.io/badge/docs-dev-blue.svg" alt="Dev"></a>
+  <a href="https://github.com/DerangedIons/CytoZoo.jl/actions/workflows/CI.yml?query=branch%3Amain"><img src="https://github.com/DerangedIons/CytoZoo.jl/actions/workflows/CI.yml/badge.svg?branch=main" alt="Build Status"></a>
+  <a href="https://codecov.io/gh/DerangedIons/CytoZoo.jl"><img src="https://codecov.io/gh/DerangedIons/CytoZoo.jl/branch/main/graph/badge.svg" alt="Coverage"></a>
 </p>
 
 A Julia package providing a registry of cardiac cell models with a common functor-based interface. Models work standalone with [DifferentialEquations.jl](https://github.com/SciML/DifferentialEquations.jl) and integrate with [Thunderbolt.jl](https://github.com/termi-official/Thunderbolt.jl) for tissue-level simulation via a package extension.
@@ -163,3 +163,60 @@ ionic = thunderbolt_model(model)    # CytoZooIonicModel wrapper
 overrides = (IKr_Multiplier = (x, t) -> x[1] > 2.0 ? 0.5 : 1.0,)
 ionic = thunderbolt_model(model; overrides)
 ```
+
+## Coupling
+
+Compose two or more models into one combined model with a shared global state. Coupling is a graph: **`Subsystem`** nodes (a model) joined by directed **edges**. A `CoupledModel` is a real callable `f(dU, U, p, t)` assembled from its submodels, so it is solved monolithically with a single ODE solver — no splitting error, and a stiff coupling can use one implicit method over the whole system. This needs only a SciMLBase solver stack (e.g. `OrdinaryDiffEq`); the base package stays dependency-free.
+
+### Variable roles
+
+Every coupled variable has a **role** in the combined system, and coupling **changes its role** when models are composed:
+
+| Role | Meaning | Primitive |
+|---|---|---|
+| state | an integrated variable (has `du/dt`) | a global state slot |
+| parameter | a fixed input | a model's parameter slot |
+| derived | an algebraic function of state (e.g. a conservation law) | monitor hooks → `monitor_history` |
+| input | driven by another model every RHS call | a `connect` edge |
+
+The coupling operations are the role changes: **`share`** identifies two subsystems' states as one slot (the `owner`'s equation governs); **`connect`** turns a parameter into an input driven live by another model's state; **monitors** surface a derived quantity post-solve; **`couple`** composes. There is no separate "switch" to turn a coupling on or off — composing with or without an edge *is* the on/off control.
+
+```julia
+using CytoZoo, OrdinaryDiffEq
+
+coupled = couple(
+    [Subsystem(ModelA(); name = :A),
+     Subsystem(ModelB(); name = :B)],
+    [ share(:A => :d, :B => :x; owner = :A),   # A.d ≡ B.x — A's equation governs the shared state
+      connect(:A => :Vm, :B => :Vm_ext) ],     # B reads A's Vm through its :Vm_ext parameter slot
+)
+
+prob = ODEProblem(coupled, (0.0, 1000.0))
+sol  = solve(prob, Rodas5P())                  # one solver over the full coupled system
+sol.u[end][state_index(coupled, :d)]           # value of the shared state at the final time
+```
+
+Two edge kinds, freely mixed in the edge list:
+
+- **`share`** — two states are the *same* variable (one global slot); the `owner`'s equation governs it (the other's is discarded), while the non-owner still reads the value. Zero authoring change.
+- **`connect`** — a directed dataflow edge: a source state is written into a receiver's parameter slot before the receiver steps, so the receiver reads it as an input. The receiver must expose that writable slot. Carries an operation `op`: `overwrite` (default, copy) or `+` to sum several edges into one slot (reset to zero then summed each eval). Under an implicit solver, `connect` inputs are frozen to their current value within the Newton step (handled by the `ForwardDiff` extension, which implicit solvers pull in automatically).
+
+`CoupledModel` is itself an `AbstractCardiacCellModel`, so couplings nest. See [`examples/coupling_toy.jl`](examples/coupling_toy.jl) for a runnable demo.
+
+### Derived observables (monitors)
+
+A model can expose **derived quantities** — algebraic functions of the state, e.g.
+conservation-law values like `ATPm = C_A - ADPm` — as observables, by implementing
+`num_monitors`, `monitor_names`, and `monitor_values!(mon, u, t, model)`. After a solve,
+`monitor_history(sol, model)` recomputes them across the trajectory:
+
+```julia
+h = monitor_history(sol, model)   # (; t, names, values)
+h.values[i, :]                    # monitor h.names[i] over time
+```
+
+It returns the time points `t`, the monitor `names`, and a `values` matrix (rows = monitors,
+columns = time points). It is post-solve — the saved solution carries no dual numbers, so it
+works under any solver. For a `CoupledModel`, monitors are its components' monitors
+concatenated (non-primary names prefixed `:<comp>_<name>`, like states), each computed from
+its own component's state slice. A model that implements no monitors yields an empty result.

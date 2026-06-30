@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is CytoZoo?
 
-A Julia package providing a registry of cardiac cell models with a common functor-based interface. Models are hand-coded callable structs implementing the interface. Works standalone with DifferentialEquations.jl and integrates with Thunderbolt.jl and TWorld.jl via package extensions. Zero runtime dependencies in the base package.
+A Julia package providing a registry of cardiac cell models with a common functor-based interface. Models are hand-coded callable structs implementing the interface. Works standalone with DifferentialEquations.jl and integrates with Thunderbolt.jl via a package extension and with TWorld.jl via native interface adherence. Zero runtime dependencies in the base package.
 
 ## Commands
 
@@ -55,6 +55,30 @@ Naming collision avoidance in the RHS: Faraday's constant → `F_param`, tempera
 
 GPU-safe isbits spatial functor types for use with `SpatialContext`: `Constant`, `SpatialStep`, `SpatialGradient`. All `<: SpatialFunction`. Users can define custom isbits callables `f(x, t) -> T` for GPU compatibility, or use closures for CPU-only simulations.
 
+### Coupling (src/coupling.jl)
+
+Compose two or more `AbstractCellModel`s into one combined model with a shared global state. Coupling is expressed as a **graph**: `Subsystem` nodes (a model + a `name`) joined by directed **edges**. `CoupledModel <: AbstractCardiacCellModel` and is a **real functor** `(cm)(dU, U, p, t)` assembled from the submodels, so couplings nest *and* a coupling is solved monolithically with a single ODE solver. The base `src/coupling.jl` is pure Julia (no solver dep): `couple(nodes, edges)` builds the node NamedTuple (keyed by node name), partitions `edges` by type, validates names, precomputes the global-state layout (per-component `solution_indices`, canonical names, ICs, operator order), and builds the per-component **execution plan** (a concretely-typed tuple of `CompEntry` stored on the `CoupledModel`) that the functor walks: each submodel writes into its `view` of the shared `dU`/`U`, connect inputs are read live from `U` (`_connect!`), and non-owned shared-slot derivatives are zeroed (`frozen`) so the owner's write — last, by `operator_order` — wins. **Solve path:** `ODEProblem(cm, tspan)` + `solve(prob, alg)` (via `ext/SciMLBaseExt.jl`) — one solver over the whole system, no splitting error, stiff-capable. `num_parameters` throws (no single parameter vector). The plan-building helpers `_frozen_indices`/`_connect_plan` take raw `(components, shares/connects, ck)` so the plan can be assembled at `couple()` time.
+
+`Subsystem(model; name = gensym(:subsystem))` — multi-node graphs whose edges reference nodes must pass explicit `name=` (the `gensym` default is only ergonomic for a single node). First node = primary component (bare state names + `vm_index`).
+
+Two edge kinds (freely mixed in the edge list):
+- **`share`** (`share(:A => :d, :B => :x; owner = :A)`) — `A.d` and `B.x` are one variable in a single global slot. **Hard-discard**: only the owner's equation drives the slot; the non-owner's contribution to that slot's derivative is zeroed (its `frozen` local indices), so it reads the value but never writes it. The functor orders the owner last (`operator_order`) so its write into the shared slot wins. Zero authoring change.
+- **`connect`** (`connect(:A => :Vm, :B => :Vm_ext)`) — a directed dataflow edge: before `B`'s equations run, `A`'s `Vm` is written into `B`'s parameter slot `:Vm_ext` (via `_connect!`, read **live from `U`** each eval), which `B`'s functor reads. The receiver must expose a writable `parameters` slot (the only authoring change coupling imposes). Carries an operation `op`: `overwrite` (default, copy) or `+` (sum all `+` edges into one slot — reset to zero then summed each eval, a cross-sectional sum, not a running total); other ops are rejected. `_connect_plan` partitions edges by op into homogeneous `overwrites`/`adds` lists, so the per-eval write has no dynamic dispatch or allocation. Under an implicit solver the connect read passes through `_connect_value` — identity in base, but `ext/ForwardDiffExt.jl` extracts the primal of a `Dual` so the input is frozen within the Newton step (a `Dual` is never stored in the receiver's `Float64` slot; `share` is unaffected — it flows through `U`).
+
+Layout naming: the first component's states keep bare names; others are prefixed (`:B_y`); shared slots take the owner's name (or an explicit `name=`). Design + decisions in `handoffs/2026-06-25-1515-coupling-monolithic-rhs.md`; runnable demo in `examples/coupling_toy.jl`.
+
+### Variable roles — and why there's no "switch" primitive
+
+Every coupled variable has a **role** in the combined ODE/DAE system, and coupling **changes its role** when models are composed: a **state** (integrated variable) ↔ a global slot; a **parameter** (fixed input) ↔ a parameter slot; a **derived** quantity (algebraic function of state, e.g. a conservation law) ↔ the monitor hooks; an **input** (driven live by another model each RHS call) ↔ a `connect` edge. The CytoZoo primitives **are** the role changes — `share` merges two states into one slot, `connect` turns a parameter into an input, monitors surface a derived quantity, `couple` composes — so the architecture's coupling needs no new primitive. The README "Variable roles" table is the canonical version.
+
+A **module switch** (a static, set-once-per-run subsystem on/off, where OFF recovers a baseline — the architecture §3 OFF-invariants) is **not a coupling-API primitive**. It decomposes: gating a coupling *element* (edge/node) is just **whether you include it when composing** — no mechanism needed (the OFF-invariant is "compose without it"); gating a model's *internal* fluxes/states is invisible to the coupling graph and belongs to the model package (an optional declare/accept protocol, added only when a real model implements it). A `switch=`/`switches=` wire-gating API was prototyped and **removed as redundant** (it re-expressed composition) and premature (toy-only, no consumer). Switches must never be routed through `p`/`SpatialContext` (the time/space-varying payload); they resolve at `couple()`/construction.
+
+**Feedback foot-gun (not built):** some feedback couplings need two models to each contribute a term to the *same* shared state's derivative (model A's core equation + model B's extra flux). The current `share` is hard-discard (one owner governs), which cannot sum contributions — so don't bake "a shared state has exactly one governing equation" in as a permanent invariant. Resolve later via an additive/contributory `share` or flux-injection through `connect`'s `+` op, when a consumer needs it. Design + decisions in `handoffs/2026-06-29-1259-cytozoo-switches-graph-surgery.md`.
+
+### Derived observables (monitors)
+
+DERIVED-mode quantities — algebraic functions of the state (e.g. conservation laws like `ATPm = C_A − ADPm`) — are surfaced as observables via the optional monitor hooks in `src/interface.jl`: `num_monitors` (default `0`), `monitor_names` (default `()`, mirrors `state_names`), and `monitor_values!(mon, u, t, model)` (no `p` arg — reads params from the struct). A model opts in by overriding all three. Surfaced **post-solve** by `monitor_history(sol, model)` (`ext/SciMLBaseExt.jl`) → `(; t, names, values::Matrix)` (rows = monitors, cols = `sol.t`); post-solve because the saved `sol.u` is plain (no `Dual`s), so it sidesteps `_connect_value` entirely. `CoupledModel` aggregates: `num_monitors` sums over components, `monitor_names` concatenates with the same non-primary `:<comp>_<name>` prefixing as states, and `monitor_values!` slices each component's own state (`layout.solution_indices[ck]`) — both walk `keys(cm.components)` (declaration order, not operator order) so names and values stay aligned. A 0-monitor model yields a `0×N` matrix without error. **Not ported:** ToRORd's ~492 ArmyHeart monitors (`TORORD_NUM_MONITORS = 0`). **Module switches**: there is no switch primitive — element-gating is composition, intra-model gating is a deferred model-package protocol (see "Variable roles" above).
+
 ### Native adherence vs. ext fallback
 
 Two integration patterns for model packages:
@@ -65,9 +89,11 @@ Two integration patterns for model packages:
 
 ### Extensions
 
-Two package extensions:
+Package extensions:
 
-**SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel`.
+**SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds the `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel` (the default coupled-solve entry point for a `CoupledModel`) and the post-solve `monitor_history(sol, model)` helper for DERIVED observables (see Derived observables above).
+
+**ForwardDiffExt** (`ext/ForwardDiffExt.jl`) — loaded when `ForwardDiff` is available (implicit solvers pull it in). Overrides `_connect_value(::Dual)` to extract the primal so a `connect` input is frozen within an implicit solver's Newton step instead of being stored as a `Dual` in the receiver's `Float64` parameter slot (see Coupling above).
 
 **ThunderboltExt** (`ext/ThunderboltExt.jl`) — Thunderbolt's `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel` as an adapter with an optional `overrides` field. Users call `thunderbolt_model(model; overrides=nothing)` (stub in base, implemented in ext). The extension constructs `SpatialContext(x, overrides)` from the mesh position internally.
 
