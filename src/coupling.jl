@@ -94,8 +94,15 @@ source value enters the slot each step:
   summing each step, so it holds the per-step sum of its sources (a cross-sectional sum, not a
   running total over time).
 
-Use one op per slot; mixing `overwrite` and `+` into the same slot is not meaningful. Other
-`op`s are not supported.
+Use one op per slot: a single `overwrite`, or a homogeneous group of `+` edges. Mixing
+`overwrite` and `+` (or more than one `overwrite`) into the same slot is rejected at
+`couple` time. Other `op`s are not supported.
+
+Under an implicit solver the connect input is frozen to its primal within each Newton step
+(see `ext/ForwardDiffExt.jl`): a correct fixed point but an approximate Jacobian that omits
+the coupling term. A *tightly*-coupled stiff `connect` can therefore see degraded Newton
+convergence (smaller steps or failures); `share` is unaffected since it flows through the
+state vector `U`.
 """
 function connect(src_pair::Pair{Symbol, Symbol}, dst_pair::Pair{Symbol, Symbol}; op = overwrite)
     op in (overwrite, +) || throw(
@@ -168,9 +175,23 @@ function couple(nodes, edges = ())
     components = map(s -> s.model, subsystems)
     shares, connects = _split_edges(edges)
     _validate_specs(components, shares, connects)
+    components = _copy_connect_receivers(components, connects)
     layout = _compute_layout(components, shares)
     plan = _build_plan(components, shares, connects, layout)
     return CoupledModel(components, shares, connects, layout, plan)
+end
+
+# Deepcopy every component that receives a `connect` edge so the monolithic RHS scratches a
+# private parameter vector (see `_connect!`) rather than mutating the caller's model instance.
+# Read-only components are shared by reference. (A single `CoupledModel` is still not safe to
+# solve concurrently across threads — deepcopy the `cm` per trajectory in an `EnsembleProblem`
+# `prob_func`; full in-RHS reentrancy is tracked as a follow-up.)
+function _copy_connect_receivers(components::NamedTuple, connects::Tuple)
+    isempty(connects) && return components
+    dsts = map(cn -> cn.dst, connects)
+    return NamedTuple{keys(components)}(
+        map(ck -> ck in dsts ? deepcopy(components[ck]) : components[ck], keys(components))
+    )
 end
 
 # Build a NamedTuple keyed by each node's name, erroring on duplicates before the build.
@@ -214,6 +235,11 @@ function _validate_specs(components::NamedTuple, shares::Tuple, connects::Tuple)
     for sh in shares
         _check_component(comp_keys, sh.a)
         _check_component(comp_keys, sh.b)
+        sh.a === sh.b && throw(
+            ArgumentError(
+                "share cannot merge two states of the same component :$(sh.a); self-shares are undefined"
+            ),
+        )
         _check_state(components[sh.a], sh.a, sh.a_state)
         _check_state(components[sh.b], sh.b, sh.b_state)
     end
@@ -221,8 +247,45 @@ function _validate_specs(components::NamedTuple, shares::Tuple, connects::Tuple)
         _check_component(comp_keys, cn.src)
         _check_component(comp_keys, cn.dst)
         _check_state(components[cn.src], cn.src, cn.src_state)
-        parameter_index(components[cn.dst], cn.dst_slot) === nothing &&
+        dst = components[cn.dst]
+        hasmethod(parameter_index, Tuple{typeof(dst), Symbol}) || throw(
+            ArgumentError(
+                "connect target :$(cn.dst) ($(typeof(dst))) must implement `parameter_index` to receive a connect edge"
+            ),
+        )
+        _provides_writable_parameters(dst) || throw(
+            ArgumentError(
+                "connect target :$(cn.dst) ($(typeof(dst))) has no `parameters` field; override `writable_parameters` or add the field to receive a connect edge"
+            ),
+        )
+        parameter_index(dst, cn.dst_slot) === nothing &&
             throw(ArgumentError("connect target :$(cn.dst) has no parameter slot :$(cn.dst_slot)"))
+    end
+    _check_connect_op_conflicts(connects)
+    return nothing
+end
+
+# A connect receiver satisfies `writable_parameters` if it has the default `parameters` field
+# or overrides the method beyond the `AbstractCellModel` fallback.
+_provides_writable_parameters(model) =
+    hasproperty(model, :parameters) ||
+    which(writable_parameters, Tuple{typeof(model)}) !== which(writable_parameters, Tuple{AbstractCellModel})
+
+# Reject conflicting ops into one receiver slot: a mix of `overwrite`/`+`, or more than one
+# `overwrite` (silent last-wins). Homogeneous `+` fan-in is the supported cross-sectional sum.
+function _check_connect_op_conflicts(connects::Tuple)
+    counts = Dict{Tuple{Symbol, Symbol}, Tuple{Int, Int}}()
+    for cn in connects
+        key = (cn.dst, cn.dst_slot)
+        no, na = get(counts, key, (0, 0))
+        counts[key] = cn.op === (+) ? (no, na + 1) : (no + 1, na)
+    end
+    for ((dst, slot), (no, na)) in counts
+        (no > 1 || (no ≥ 1 && na ≥ 1)) && throw(
+            ArgumentError(
+                "connect slot :$dst.:$slot has conflicting ops; use a single `overwrite` or only `+` edges"
+            ),
+        )
     end
     return nothing
 end
@@ -242,6 +305,8 @@ function _compute_layout(components::NamedTuple, shares::Tuple)
     comp_keys = keys(components)
     primary = first(comp_keys)
 
+    ics = map(default_initial_state, components)   # one IC vector per component, computed once
+
     share_of = Dict{Tuple{Symbol, Symbol}, ShareSpec}()
     for sh in shares
         share_of[(sh.a, sh.a_state)] = sh
@@ -250,12 +315,12 @@ function _compute_layout(components::NamedTuple, shares::Tuple)
 
     slot_of = Dict{Tuple{Symbol, Symbol}, Int}()
     names = Symbol[]
-    u0 = _coupled_initial_eltype(components)[]
+    u0 = promote_type(map(eltype, values(ics))...)[]
 
     for ck in comp_keys
         model = components[ck]
         snames = state_names(model)
-        ic = default_initial_state(model)
+        ic = ics[ck]
         for (li, sname) in enumerate(snames)
             key = (ck, sname)
             sh = get(share_of, key, nothing)
@@ -270,7 +335,7 @@ function _compute_layout(components::NamedTuple, shares::Tuple)
                     slot_of[key] = slot_of[partner]   # shared slot already created
                 else
                     push!(names, sh.name)
-                    push!(u0, _share_initial_value(components, sh))
+                    push!(u0, _share_initial_value(components, ics, sh))
                     slot_of[key] = length(names)
                 end
             end
@@ -299,13 +364,9 @@ function _compute_layout(components::NamedTuple, shares::Tuple)
     return CouplingLayout(length(names), solution_indices, names, name_to_index, u0, operator_order, vm_index)
 end
 
-_coupled_initial_eltype(components::NamedTuple) =
-    promote_type(map(c -> eltype(default_initial_state(c)), values(components))...)
-
-function _share_initial_value(components::NamedTuple, sh::ShareSpec)
+function _share_initial_value(components::NamedTuple, ics::NamedTuple, sh::ShareSpec)
     owner_state = sh.owner === sh.a ? sh.a_state : sh.b_state
-    model = components[sh.owner]
-    return default_initial_state(model)[state_index(model, owner_state)]
+    return ics[sh.owner][state_index(components[sh.owner], owner_state)]
 end
 
 # Operator-application order: for each share the non-owner steps before the owner, so the
@@ -353,7 +414,8 @@ One component's pre-resolved execution entry in a [`CoupledModel`](@ref)'s monol
 `block` is the component's slice of the global state (a `UnitRange` when contiguous, else an
 index vector); `frozen` are local indices of shared states it does not own (zeroed after its
 functor, so the owner's write wins); `overwrites`/`adds` are connect edges resolved to
-`(src_global_index, dst_param_index)`; `params` is the receiver's parameter vector, or `nothing`
+`(src_global_index, dst_param_index)`; `params` is the receiver's `writable_parameters` vector
+(a private deepcopy made by `couple`, so staging never mutates the caller's model), or `nothing`
 when it has no incoming connect edges.
 """
 struct CompEntry{M, B, P, F, OW, AD}
@@ -386,13 +448,15 @@ _entries(components, shares, connects, layout, order, i) =
 function _entry(components, shares, connects, layout, ck)
     si = layout.solution_indices
     idxs = si[ck]
+    # UnitRange when contiguous (fast view), else the index vector. The Union here is build-time
+    # only — the concrete type is captured by `CompEntry`'s `B`, so the functor stays specialized.
     block = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
     frozen = _frozen_indices(components, shares, ck)
     ow_l, ad_l = _connect_plan(components, connects, ck)
     toglobal(e) = (si[e[1]][e[2]], e[3])   # (src_sym, src_local, dst_param) -> (src_global, dst_param)
     overwrites = map(toglobal, ow_l) |> Tuple
     adds = map(toglobal, ad_l) |> Tuple
-    params = (isempty(ow_l) && isempty(ad_l)) ? nothing : components[ck].parameters
+    params = (isempty(ow_l) && isempty(ad_l)) ? nothing : writable_parameters(components[ck])
     return CompEntry(components[ck], block, params, frozen, overwrites, adds)
 end
 
@@ -474,6 +538,8 @@ end
 # Monolithic single-RHS: evaluate every component into the shared dU/U in operator order. This
 # is the default solve path — `ODEProblem(cm, tspan)` + `solve` (see ext/SciMLBaseExt.jl).
 (cm::CoupledModel)(dU, U, p, t) = (_run!(dU, U, p, t, cm.plan); nothing)
+# A composite has no single flat parameter vector (parameters live on each component); see the
+# `num_parameters` note in interface.jl on atomic-vs-composite models.
 num_parameters(::CoupledModel) = throw(
     ArgumentError("CoupledModel has no single parameter vector; parameters live on each component")
 )

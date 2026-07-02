@@ -199,9 +199,11 @@ sol.u[end][state_index(coupled, :d)]           # value of the shared state at th
 Two edge kinds, freely mixed in the edge list:
 
 - **`share`** — two states are the *same* variable (one global slot); the `owner`'s equation governs it (the other's is discarded), while the non-owner still reads the value. Zero authoring change.
-- **`connect`** — a directed dataflow edge: a source state is written into a receiver's parameter slot before the receiver steps, so the receiver reads it as an input. The receiver must expose that writable slot. Carries an operation `op`: `overwrite` (default, copy) or `+` to sum several edges into one slot (reset to zero then summed each eval). Under an implicit solver, `connect` inputs are frozen to their current value within the Newton step (handled by the `ForwardDiff` extension, which implicit solvers pull in automatically).
+- **`connect`** — a directed dataflow edge: a source state is written into a receiver's parameter slot before the receiver steps, so the receiver reads it as an input. To receive a `connect`, a model must name the slot via `parameter_index` and expose it via `writable_parameters` (default: a `parameters` field). Carries an operation `op`: `overwrite` (default, copy) or `+` to sum several edges into one slot (reset to zero then summed each eval); mixing `overwrite` and `+` — or more than one `overwrite` — into one slot is rejected at `couple` time. Under an implicit solver, `connect` inputs are frozen to their current value within the Newton step (handled by the `ForwardDiff` extension, which implicit solvers pull in automatically) — a correct fixed point but an approximate Jacobian, so a *tightly*-coupled stiff `connect` may see degraded Newton convergence; `share` is unaffected.
 
 `CoupledModel` is itself an `AbstractCardiacCellModel`, so couplings nest. See [`examples/coupling_toy.jl`](examples/coupling_toy.jl) for a runnable demo.
+
+`couple` deepcopies each `connect` receiver, so building a coupling never mutates the model instances you passed in. A single `CoupledModel` stages connect inputs into that private copy and is **not** safe to solve concurrently across threads; for a threaded parameter sweep, use an `EnsembleProblem` whose `prob_func` gives each trajectory its own `deepcopy(cm)`.
 
 ### Derived observables (monitors)
 

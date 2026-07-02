@@ -81,6 +81,43 @@ function (::_MonoQ)(du, u, p, t)
     return nothing
 end
 
+# Non-contiguous-block toy models: sharing B's *last* state with A's *first* scatters B's
+# global indices (x appended after A, y folded onto A's early slot) → B.solution_indices = [3,1],
+# which forces the `copy(idxs)` / Vector-indexed `view` branch in the plan.
+struct _ScatterA <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_ScatterA) = 2
+CytoZoo.state_names(::_ScatterA) = (:p, :q)
+CytoZoo.default_initial_state(::_ScatterA) = [2.0, 3.0]
+CytoZoo.state_index(::_ScatterA, n::Symbol) = findfirst(==(n), (:p, :q))
+CytoZoo.transmembrane_potential_index(::_ScatterA) = 1
+function (::_ScatterA)(du, u, p, t)
+    du[1] = -u[1]                     # p — owns the shared slot
+    du[2] = 2u[2]                     # q
+    return nothing
+end
+
+struct _ScatterB <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_ScatterB) = 2
+CytoZoo.state_names(::_ScatterB) = (:x, :y)
+CytoZoo.default_initial_state(::_ScatterB) = [7.0, 9.0]
+CytoZoo.state_index(::_ScatterB, n::Symbol) = findfirst(==(n), (:x, :y))
+CytoZoo.transmembrane_potential_index(::_ScatterB) = 1
+function (::_ScatterB)(du, u, p, t)
+    du[1] = 5.0                       # x
+    du[2] = 999.0                     # y — discarded (A owns the shared slot)
+    return nothing
+end
+
+# Receiver that implements parameter_index but exposes no writable_parameters (no `parameters`
+# field, no override) — for the connect-participation contract error.
+struct _NoParamsField <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_NoParamsField) = 1
+CytoZoo.state_names(::_NoParamsField) = (:z,)
+CytoZoo.default_initial_state(::_NoParamsField) = [0.0]
+CytoZoo.state_index(::_NoParamsField, n::Symbol) = findfirst(==(n), (:z,))
+CytoZoo.transmembrane_potential_index(::_NoParamsField) = 1
+CytoZoo.parameter_index(::_NoParamsField, n::Symbol) = n === :in ? 1 : nothing
+
 @testset "couple — single node" begin
     cm = couple([Subsystem(_CplMockA(); name = :A)])
     @test cm isa CoupledModel
@@ -220,4 +257,67 @@ end
     @test dUsh[state_index(cm_sh, :a)] == -0.1 * 1.0
     @test dUsh[state_index(cm_sh, :v)] == -_MONO_K * (10.0 - 1.0)  # P's value, NOT Q's 12345
     @test dUsh[state_index(cm_sh, :Q_w)] == 10.0 - 0.0            # Q's w driven by shared v
+    cm_sh(dUsh, Ush, nothing, 0.0)                               # warm up
+    @test (@allocated cm_sh(dUsh, Ush, nothing, 0.0)) == 0        # share path (frozen zeroing) allocation-free
+end
+
+@testset "couple — non-contiguous block" begin
+    cm = couple(
+        [Subsystem(_ScatterA(); name = :A), Subsystem(_ScatterB(); name = :B)],
+        [share(:A => :p, :B => :y; owner = :A)],
+    )
+    @test cm.layout.solution_indices.B == [3, 1]        # x→3 (appended), y→1 (shared) — non-contiguous
+    U = default_initial_state(cm)
+    @test U == [2.0, 3.0, 7.0]                          # slot1=A.p IC, slot2=A.q, slot3=B.x
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test dU[1] == -2.0                                 # A.p owns shared slot 1 (B's 999 discarded)
+    @test dU[2] == 2 * 3.0                              # A.q
+    @test dU[3] == 5.0                                  # B.x, written through the scattered view
+
+    cm(dU, U, nothing, 0.0)                             # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0     # scattered (Vector-indexed) view stays allocation-free
+end
+
+@testset "couple — connect does not mutate the caller's model" begin
+    reader = _MonoReader()
+    reader.parameters[1] = 42.0                         # sentinel the coupling must not clobber
+    cm = couple(
+        [Subsystem(_MonoA(); name = :A), Subsystem(reader; name = :R)],
+        [connect(:A => :d, :R => :d_ext)],
+    )
+    U = default_initial_state(cm)
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)                             # stages d(0)=1 into the deepcopied receiver's slot
+    @test dU[state_index(cm, :R_acc)] == 1.0            # coupling still works on the copy
+    @test reader.parameters[1] == 42.0                  # caller's original model untouched
+end
+
+@testset "couple — connect op conflicts rejected" begin
+    @test_throws ArgumentError couple(                  # two overwrites into one slot (last-wins)
+        [Subsystem(_CplMockA(); name = :A), Subsystem(_CplMockP(); name = :P)],
+        [connect(:A => :b, :P => :in), connect(:A => :c, :P => :in)],
+    )
+    @test_throws ArgumentError couple(                  # mixed overwrite/+ into one slot
+        [Subsystem(_CplMockA(); name = :A), Subsystem(_CplMockP(); name = :P)],
+        [connect(:A => :b, :P => :in), connect(:A => :c, :P => :in; op = +)],
+    )
+end
+
+@testset "couple — self-share rejected" begin
+    @test_throws ArgumentError couple(
+        [Subsystem(_CplMockA(); name = :A)],
+        [share(:A => :b, :A => :c; owner = :A)],
+    )
+end
+
+@testset "couple — connect-participation contract" begin
+    @test_throws ArgumentError couple(                  # receiver implements no parameter_index
+        [Subsystem(_MonoA(); name = :S), Subsystem(_CplMockA(); name = :A)],
+        [connect(:S => :c, :A => :in)],
+    )
+    @test_throws ArgumentError couple(                  # receiver has parameter_index but no writable_parameters
+        [Subsystem(_MonoA(); name = :S), Subsystem(_NoParamsField(); name = :N)],
+        [connect(:S => :c, :N => :in)],
+    )
 end

@@ -8,6 +8,12 @@ Every concrete model must implement:
 - [`transmembrane_potential_index`](@ref)
 - [`default_initial_state`](@ref)
 
+A **composite** model (e.g. `CoupledModel`) merges its components' states into one
+global vector, so it implements the state-side methods above; but its parameters stay
+on the individual components rather than in a single flat vector. `num_parameters`
+(and `parameter_names`) are therefore required only for **atomic** models — a composite
+may leave them unimplemented, in which case they throw.
+
 # Element-type genericity
 
 A model's RHS must compute in the element type of its state vector, so a `Float32`
@@ -48,7 +54,9 @@ function num_states end
 """
     num_parameters(model::AbstractCellModel) -> Int
 
-Total number of model parameters.
+Total number of model parameters. Required for atomic models; a composite model
+(e.g. `CoupledModel`) has no single flat parameter vector and may leave this
+unimplemented, in which case it throws.
 """
 function num_parameters end
 
@@ -97,6 +105,20 @@ function state_names end
 Tuple of all parameter names in order.
 """
 function parameter_names end
+
+"""
+    writable_parameters(model::AbstractCellModel) -> AbstractVector
+
+The mutable parameter vector a `connect` edge writes its staged input into (indexed by
+[`parameter_index`](@ref)). Defaults to the model's `parameters` field.
+
+**Connect-participation contract.** To receive a [`connect`](@ref) edge, a model must
+implement [`parameter_index`](@ref) (to name the target slot) and expose
+`writable_parameters` (the vector the coupling writes into, which the model's functor
+reads). `couple` deepcopies each connect receiver, so a coupling scratches a private
+copy and never mutates the caller's model instance.
+"""
+writable_parameters(model::AbstractCellModel) = model.parameters
 
 # ---------------------------------------------------------------------------
 # Optional interface — Rush-Larsen
