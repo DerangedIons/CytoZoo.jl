@@ -179,7 +179,7 @@ Every coupled variable has a **role** in the combined system, and coupling **cha
 | derived | an algebraic function of state (e.g. a conservation law) | monitor hooks → `monitor_history` |
 | input | driven by another model every RHS call | a `connect` edge |
 
-The coupling operations are the role changes: **`share`** identifies two subsystems' states as one slot (the `owner`'s equation governs); **`connect`** turns a parameter into an input driven live by another model's state; **monitors** surface a derived quantity post-solve; **`couple`** composes. There is no separate "switch" to turn a coupling on or off — composing with or without an edge *is* the on/off control.
+The coupling operations are the role changes: **`share`** identifies two subsystems' states as one slot (the `owner`'s equation governs); **`connect`** turns a parameter into an input driven live by another model's state; **monitors** surface a derived quantity post-solve; **`couple`** composes. There is no separate "switch" to turn a capability on or off — composing with or without a **subsystem or edge** *is* the only on/off control, and omitting one recovers the baseline.
 
 ```julia
 using CytoZoo, OrdinaryDiffEq

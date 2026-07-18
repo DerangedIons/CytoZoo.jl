@@ -4,7 +4,7 @@
 #   2. a connect — a model reads another model's state through a parameter slot (a dataflow edge)
 #
 # This is the minimal first read. For the full coupling taxonomy — feedforward WIREs, monitors,
-# construction-time module switches, plus target-API specs for the not-yet-built patterns — see
+# switching by subsystem composition, plus target-API specs for the not-yet-built patterns — see
 # examples/coupling_mwe.jl (+ coupling_mwe.md).
 #
 # Run (needs an OrdinaryDiffEq solver):
