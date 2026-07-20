@@ -581,9 +581,12 @@ ECCMitoRedox model.
 ## Where the design rationale lives now
 
 The two prior design docs (`handoffs/2026-06-25-1515-coupling-monolithic-rhs.md` and
-`handoffs/2026-07-13-1549-cytozoo-switches-are-subsystems.md`) referenced in CLAUDE.md have
-been **deleted** — the `handoffs/` dir is otherwise empty. The surviving canonical sources are:
+`handoffs/2026-07-13-1549-cytozoo-switches-are-subsystems.md`) once referenced in CLAUDE.md have
+been **deleted**, and those references now point here instead. The canonical sources are:
 
+- **`docs/adr/0001-coupling-architecture.md`** → *why* the architecture is what it is: the MTK
+  removal, and the operator-splitting evaluation (with measured accuracy/stiffness numbers) that
+  led to the monolithic single-RHS design. Recovered from the deleted design docs.
 - **CLAUDE.md** → the "Coupling", "Variable roles", and "Derived observables" sections.
 - **README** → the "Variable roles" table (the canonical version).
 - **`examples/coupling_mwe.md`** → the socket map and the D↔Gauthier / R↔Kembro analogue mapping.
