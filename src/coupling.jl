@@ -48,6 +48,19 @@ Declare that `state_a` of component `a` and `state_b` of component `b` are the *
 quantity (one shared global slot). `a` and `b` are subsystem names (see [`Subsystem`](@ref)).
 `owner` must be `a` or `b`; it decides whose equation governs the shared slot (the other's is
 hard-discarded) and supplies the canonical name (`name`) and initial value.
+
+Shares are resolved as equivalence **classes**, so a state may appear in more than one edge and
+the whole group still collapses to a single slot. To share one quantity across three or more
+components, fan the edges out from the owner:
+
+```julia
+[share(:A => :d, :B => :x; owner = :A), share(:A => :d, :C => :z; owner = :A)]
+```
+
+Every non-owner in the class is frozen, and the result does not depend on the order the nodes
+were declared in. *Chaining* edges instead (`:A`–`:B`, then `:B`–`:C`) is an error: both edges
+name one class but declare different owners, and a shared slot has exactly one governing
+equation.
 """
 function share(
         a_pair::Pair{Symbol, Symbol}, b_pair::Pair{Symbol, Symbol};
@@ -100,9 +113,15 @@ Use one op per slot: a single `overwrite`, or a homogeneous group of `+` edges. 
 
 Under an implicit solver the connect input is frozen to its primal within each Newton step
 (see `ext/ForwardDiffExt.jl`): a correct fixed point but an approximate Jacobian that omits
-the coupling term. A *tightly*-coupled stiff `connect` can therefore see degraded Newton
-convergence (smaller steps or failures); `share` is unaffected since it flows through the
-state vector `U`.
+the coupling term. Two consequences:
+
+- A *tightly*-coupled stiff `connect` can see degraded Newton convergence (smaller steps or
+  failures).
+- Any ForwardDiff derivative taken **through** a connect edge loses that coupling term
+  entirely, so sensitivity analysis or gradient-based fitting across a `connect` is
+  incorrect — not merely inexact.
+
+`share` is unaffected on both counts, since it flows through the state vector `U`.
 """
 function connect(src_pair::Pair{Symbol, Symbol}, dst_pair::Pair{Symbol, Symbol}; op = overwrite)
     op in (overwrite, +) || throw(
@@ -116,7 +135,7 @@ end
 """
     CouplingLayout
 
-Pre-computed global state layout for a [`CoupledModel`]. Fields:
+Pre-computed global state layout for a [`CoupledModel`](@ref). Fields:
 - `num_states` — number of distinct global slots.
 - `solution_indices` — `NamedTuple` mapping each component key to its global index vector,
   in the component's own local state order (the global slots each component writes its `view` of `dU`/`U` into).
@@ -176,8 +195,9 @@ function couple(nodes, edges = ())
     shares, connects = _split_edges(edges)
     _validate_specs(components, shares, connects)
     components = _copy_connect_receivers(components, connects)
-    layout = _compute_layout(components, shares)
-    plan = _build_plan(components, shares, connects, layout)
+    parent, classes = _share_classes(shares)
+    layout = _compute_layout(components, parent, classes)
+    plan = _build_plan(components, parent, classes, connects, layout)
     return CoupledModel(components, shares, connects, layout, plan)
 end
 
@@ -299,21 +319,87 @@ function _check_state(model, comp::Symbol, s::Symbol)
     return nothing
 end
 
+# --- share equivalence classes ---
+#
+# A `share` edge asserts two states are one variable, so shares must be resolved as
+# equivalence *classes*, not pairwise: chained edges (`A.d ≡ B.x` and `B.x ≡ C.z`) name a
+# single variable and must collapse to one global slot. Union-find over `(component, state)`
+# keys gives that for chains, fan-out from one state, and groups of any size uniformly.
+#
+# Each class has exactly one owner — the component whose equation drives the slot; every
+# other member is frozen. Two edges in one class naming different owners is a contradiction
+# and throws.
+
+const StateKey = Tuple{Symbol, Symbol}
+
+"""
+    ShareClass
+
+Resolved metadata for one share equivalence class: the component whose equation governs the
+shared slot (`owner`), the owner's local state name (`owner_state`, which supplies the slot's
+initial value), and the slot's canonical `name`.
+"""
+struct ShareClass
+    owner::Symbol
+    owner_state::Symbol
+    name::Symbol
+end
+
+# Path-compressed find; a key absent from `parent` is its own root.
+function _find_root(parent::Dict{StateKey, StateKey}, k::StateKey)
+    p = get(parent, k, k)
+    p === k && return k
+    r = _find_root(parent, p)
+    parent[k] = r
+    return r
+end
+
+# Build the union-find forest over share endpoints plus one `ShareClass` per class root.
+# Every share endpoint is seeded into `parent`, so `haskey(parent, key)` is the membership
+# test "does this state participate in a share".
+function _share_classes(shares::Tuple)
+    parent = Dict{StateKey, StateKey}()
+    for sh in shares
+        a = (sh.a, sh.a_state)
+        b = (sh.b, sh.b_state)
+        get!(parent, a, a)
+        get!(parent, b, b)
+        ra, rb = _find_root(parent, a), _find_root(parent, b)
+        ra === rb || (parent[ra] = rb)
+    end
+
+    classes = Dict{StateKey, ShareClass}()
+    for sh in shares
+        r = _find_root(parent, (sh.a, sh.a_state))
+        owner_state = sh.owner === sh.a ? sh.a_state : sh.b_state
+        prev = get(classes, r, nothing)
+        if prev === nothing
+            classes[r] = ShareClass(sh.owner, owner_state, sh.name)
+        elseif prev.owner !== sh.owner
+            throw(
+                ArgumentError(
+                    "shared states :$(prev.owner).:$(prev.owner_state) and :$(sh.owner).:$owner_state " *
+                        "are transitively the same slot but declare different owners; a shared slot has " *
+                        "exactly one governing equation. Declare every share in the group against the " *
+                        "owning component (e.g. share(:owner => :s, :other => :t; owner = :owner)) " *
+                        "rather than chaining them."
+                ),
+            )
+        end
+    end
+    return parent, classes
+end
+
 # --- layout ---
 
-function _compute_layout(components::NamedTuple, shares::Tuple)
+function _compute_layout(components::NamedTuple, parent, classes)
     comp_keys = keys(components)
     primary = first(comp_keys)
 
     ics = map(default_initial_state, components)   # one IC vector per component, computed once
 
-    share_of = Dict{Tuple{Symbol, Symbol}, ShareSpec}()
-    for sh in shares
-        share_of[(sh.a, sh.a_state)] = sh
-        share_of[(sh.b, sh.b_state)] = sh
-    end
-
-    slot_of = Dict{Tuple{Symbol, Symbol}, Int}()
+    slot_of = Dict{StateKey, Int}()
+    class_slot = Dict{StateKey, Int}()             # class root -> the one global slot it owns
     names = Symbol[]
     u0 = promote_type(map(eltype, values(ics))...)[]
 
@@ -321,22 +407,30 @@ function _compute_layout(components::NamedTuple, shares::Tuple)
         model = components[ck]
         snames = state_names(model)
         ic = ics[ck]
+        length(ic) == length(snames) || throw(
+            ArgumentError(
+                "component :$ck reports $(length(snames)) state names but its " *
+                    "default_initial_state has length $(length(ic)); they must agree"
+            ),
+        )
         for (li, sname) in enumerate(snames)
             key = (ck, sname)
-            sh = get(share_of, key, nothing)
-            if sh === nothing
+            if !haskey(parent, key)
                 gname = ck === primary ? sname : Symbol(ck, :_, sname)
                 push!(names, gname)
                 push!(u0, ic[li])
                 slot_of[key] = length(names)
             else
-                partner = key == (sh.a, sh.a_state) ? (sh.b, sh.b_state) : (sh.a, sh.a_state)
-                if haskey(slot_of, partner)
-                    slot_of[key] = slot_of[partner]   # shared slot already created
-                else
-                    push!(names, sh.name)
-                    push!(u0, _share_initial_value(components, ics, sh))
+                r = _find_root(parent, key)
+                slot = get(class_slot, r, nothing)
+                if slot === nothing
+                    cls = classes[r]
+                    push!(names, cls.name)
+                    push!(u0, ics[cls.owner][state_index(components[cls.owner], cls.owner_state)])
+                    class_slot[r] = length(names)
                     slot_of[key] = length(names)
+                else
+                    slot_of[key] = slot   # class slot already created
                 end
             end
         end
@@ -356,7 +450,7 @@ function _compute_layout(components::NamedTuple, shares::Tuple)
         end
     )
 
-    operator_order = _operator_order(comp_keys, shares)
+    operator_order = _operator_order(comp_keys, components, parent, classes)
 
     primary_model = components[primary]
     vm_index = slot_of[(primary, state_names(primary_model)[transmembrane_potential_index(primary_model)])]
@@ -364,18 +458,19 @@ function _compute_layout(components::NamedTuple, shares::Tuple)
     return CouplingLayout(length(names), solution_indices, names, name_to_index, u0, operator_order, vm_index)
 end
 
-function _share_initial_value(components::NamedTuple, ics::NamedTuple, sh::ShareSpec)
-    owner_state = sh.owner === sh.a ? sh.a_state : sh.b_state
-    return ics[sh.owner][state_index(components[sh.owner], owner_state)]
-end
-
-# Operator-application order: for each share the non-owner steps before the owner, so the
-# owner's write into the shared slot is final. Stable topological sort over component keys.
-function _operator_order(comp_keys::NTuple{N, Symbol}, shares::Tuple) where {N}
+# Operator-application order: every non-owner member of a share class steps before that
+# class's owner, so the owner's write into the shared slot is final. Stable topological sort
+# over component keys; iterating components/states (not the `parent` dict) keeps it
+# deterministic.
+function _operator_order(comp_keys::NTuple{N, Symbol}, components::NamedTuple, parent, classes) where {N}
     edges = Tuple{Symbol, Symbol}[]   # (before, after)
-    for sh in shares
-        nonowner = sh.owner === sh.a ? sh.b : sh.a
-        nonowner == sh.owner || push!(edges, (nonowner, sh.owner))
+    for ck in comp_keys
+        for sname in state_names(components[ck])
+            key = (ck, sname)
+            haskey(parent, key) || continue
+            owner = classes[_find_root(parent, key)].owner
+            ck === owner || push!(edges, (ck, owner))
+        end
     end
     isempty(edges) && return collect(comp_keys)
 
@@ -435,23 +530,23 @@ _connect_value(x) = x
 
 # Build a concretely-typed tuple of entries in operator order (recursion keeps element types
 # concrete → the functor specializes and stays allocation-free on the contiguous-block case).
-_build_plan(components, shares, connects, layout) =
-    _entries(components, shares, connects, layout, layout.operator_order, 1)
+_build_plan(components, parent, classes, connects, layout) =
+    _entries(components, parent, classes, connects, layout, layout.operator_order, 1)
 
-_entries(components, shares, connects, layout, order, i) =
+_entries(components, parent, classes, connects, layout, order, i) =
     i > length(order) ? () :
     (
-        _entry(components, shares, connects, layout, order[i]),
-        _entries(components, shares, connects, layout, order, i + 1)...,
+        _entry(components, parent, classes, connects, layout, order[i]),
+        _entries(components, parent, classes, connects, layout, order, i + 1)...,
     )
 
-function _entry(components, shares, connects, layout, ck)
+function _entry(components, parent, classes, connects, layout, ck)
     si = layout.solution_indices
     idxs = si[ck]
     # UnitRange when contiguous (fast view), else the index vector. The Union here is build-time
     # only — the concrete type is captured by `CompEntry`'s `B`, so the functor stays specialized.
     block = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
-    frozen = _frozen_indices(components, shares, ck)
+    frozen = _frozen_indices(components, parent, classes, ck)
     ow_l, ad_l = _connect_plan(components, connects, ck)
     toglobal(e) = (si[e[1]][e[2]], e[3])   # (src_sym, src_local, dst_param) -> (src_global, dst_param)
     overwrites = map(toglobal, ow_l) |> Tuple
@@ -538,26 +633,28 @@ end
 # Monolithic single-RHS: evaluate every component into the shared dU/U in operator order. This
 # is the default solve path — `ODEProblem(cm, tspan)` + `solve` (see ext/SciMLBaseExt.jl).
 (cm::CoupledModel)(dU, U, p, t) = (_run!(dU, U, p, t, cm.plan); nothing)
-# A composite has no single flat parameter vector (parameters live on each component); see the
-# `num_parameters` note in interface.jl on atomic-vs-composite models.
-num_parameters(::CoupledModel) = throw(
-    ArgumentError("CoupledModel has no single parameter vector; parameters live on each component")
-)
+
+# `num_parameters` and `parameter_names` are deliberately left UNDEFINED for `CoupledModel`: a
+# composite has no single flat parameter vector (parameters live on each component). Defining a
+# method that only throws would make `hasmethod(num_parameters, Tuple{CoupledModel})` report a
+# capability the type does not have — and this codebase feature-detects with `hasmethod` (see
+# `_validate_specs`). Leaving it undefined yields a truthful `MethodError` instead.
 
 # --- coupling-semantics helpers (consumed by the monolithic plan builder) ---
 
-# Local state indices `ck` participates in via a share but does not own (used by the monolithic
-# plan to zero the non-owner's contribution to a shared slot, so the owner's write wins).
-function _frozen_indices(components::NamedTuple, shares::Tuple, ck::Symbol)
+# Local state indices of `ck` that belong to a share class `ck` does not own (the monolithic plan
+# zeroes these so the class owner's write into the shared slot wins). Driven by the resolved
+# equivalence classes, not by individual edges, so every non-owner member of a multi-way share is
+# frozen exactly once.
+function _frozen_indices(components::NamedTuple, parent, classes, ck::Symbol)
     snames = state_names(components[ck])
     frozen = Int[]
-    for sh in shares
-        sh.owner === ck && continue
-        if sh.a === ck
-            push!(frozen, findfirst(==(sh.a_state), snames))
-        elseif sh.b === ck
-            push!(frozen, findfirst(==(sh.b_state), snames))
-        end
+    for (li, sname) in enumerate(snames)
+        key = (ck, sname)
+        haskey(parent, key) || continue
+        cls = classes[_find_root(parent, key)]
+        (cls.owner === ck && cls.owner_state === sname) && continue
+        push!(frozen, li)
     end
     return Tuple(frozen)
 end

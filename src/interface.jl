@@ -12,7 +12,8 @@ A **composite** model (e.g. `CoupledModel`) merges its components' states into o
 global vector, so it implements the state-side methods above; but its parameters stay
 on the individual components rather than in a single flat vector. `num_parameters`
 (and `parameter_names`) are therefore required only for **atomic** models — a composite
-may leave them unimplemented, in which case they throw.
+leaves them undefined, so calling one raises a `MethodError` and
+`hasmethod(num_parameters, Tuple{typeof(model)})` correctly reports `false`.
 
 # Element-type genericity
 
@@ -55,8 +56,8 @@ function num_states end
     num_parameters(model::AbstractCellModel) -> Int
 
 Total number of model parameters. Required for atomic models; a composite model
-(e.g. `CoupledModel`) has no single flat parameter vector and may leave this
-unimplemented, in which case it throws.
+(e.g. `CoupledModel`) has no single flat parameter vector and leaves this undefined,
+so calling it raises a `MethodError`.
 """
 function num_parameters end
 

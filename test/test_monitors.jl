@@ -67,6 +67,25 @@ end
         @test mon == [2.0 - 0.25, 5.0 - 0.6]
     end
 
+    @testset "coupled — monitor order follows declaration, not operator order" begin
+        # Owner :A forces the non-owner :B to step FIRST, so operator_order is [:B, :A] while the
+        # declaration order stays [:A, :B]. Monitors must follow declaration order — walking
+        # operator order instead would silently permute every name/value pair.
+        cm = couple(
+            [Subsystem(_MonMock(2.0); name = :A), Subsystem(_MonMock(5.0); name = :B)],
+            [share(:A => :s, :B => :s; owner = :A)],
+        )
+        @test cm.layout.operator_order == [:B, :A]              # differs from declaration order
+        @test collect(keys(cm.components)) == [:A, :B]
+        @test monitor_names(cm) == (:deriv, :B_deriv)
+
+        U = default_initial_state(cm)
+        U[state_index(cm, :s)] = 0.25                            # the one shared s
+        mon = zeros(2)
+        monitor_values!(mon, U, 0.0, cm)
+        @test mon == [2.0 - 0.25, 5.0 - 0.25]                    # declaration order, both read shared s
+    end
+
     @testset "coupled — monitor_history end-to-end" begin
         cm = couple([Subsystem(_MonMock(2.0); name = :A), Subsystem(_MonMock(5.0); name = :B)])
         s_A = state_index(cm, :s)

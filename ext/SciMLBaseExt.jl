@@ -8,17 +8,7 @@ function SciMLBase.ODEProblem(model::CytoZoo.AbstractCellModel, tspan::Tuple;
     return SciMLBase.ODEProblem{true}(model, u0, tspan, p; kwargs...)
 end
 
-"""
-    monitor_history(sol, model::AbstractCellModel) -> (; t, names, values)
-
-Recompute `model`'s derived/monitored quantities (see [`monitor_values!`](@ref)) across a
-solved trajectory `sol`. Returns a `NamedTuple` of the time points `t`, the monitor `names`,
-and a `values` matrix (rows = monitors in `names` order, columns = time points).
-
-Post-solve by design: the saved `sol.u` is plain (no `Dual`s), so this avoids any
-implicit-solver primal-extraction concerns. A model with `num_monitors(model) == 0` yields an
-empty (`0 × length(sol.t)`) `values` matrix.
-"""
+# Docstring lives on the stub in src/CytoZoo.jl so Documenter's `Modules = [CytoZoo]` sees it.
 function CytoZoo.monitor_history(sol, model::CytoZoo.AbstractCellModel)
     names = CytoZoo.monitor_names(model)
     nmon = CytoZoo.num_monitors(model)

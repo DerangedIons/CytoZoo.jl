@@ -81,6 +81,27 @@ function (::_MonoQ)(du, u, p, t)
     return nothing
 end
 
+struct _MonoR <: CytoZoo.AbstractCardiacCellModel end     # third member of a 3-way share on v
+CytoZoo.num_states(::_MonoR) = 2
+CytoZoo.state_names(::_MonoR) = (:v, :s)
+CytoZoo.default_initial_state(::_MonoR) = [10.0, 0.0]
+CytoZoo.state_index(::_MonoR, n::Symbol) = findfirst(==(n), (:v, :s))
+CytoZoo.transmembrane_potential_index(::_MonoR) = 1
+function (::_MonoR)(du, u, p, t)
+    du[1] = 777.0                     # v — discarded (P owns the shared slot)
+    du[2] = 2 * u[1]                  # s — driven by the shared v
+    return nothing
+end
+
+# Reports more state names than its initial-state vector has entries — `couple` must reject
+# this at construction rather than emitting a BoundsError from inside the layout loop.
+struct _BadLength <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_BadLength) = 3
+CytoZoo.state_names(::_BadLength) = (:m, :n, :o)
+CytoZoo.default_initial_state(::_BadLength) = [1.0, 2.0]
+CytoZoo.state_index(::_BadLength, n::Symbol) = findfirst(==(n), (:m, :n, :o))
+CytoZoo.transmembrane_potential_index(::_BadLength) = 1
+
 # Non-contiguous-block toy models: sharing B's *last* state with A's *first* scatters B's
 # global indices (x appended after A, y folded onto A's early slot) → B.solution_indices = [3,1],
 # which forces the `copy(idxs)` / Vector-indexed `view` branch in the plan.
@@ -192,7 +213,8 @@ end
     )                                                # duplicate node name
     @test_throws ArgumentError couple([Subsystem(_CplMockA(); name = :A)], [:not_an_edge]) # unknown edge type
     cm = couple([Subsystem(_CplMockA(); name = :A)])
-    @test_throws ArgumentError num_parameters(cm)                                          # no single parameter vector
+    @test_throws MethodError num_parameters(cm)                                            # no single parameter vector
+    @test !hasmethod(num_parameters, Tuple{typeof(cm)})                                    # and does not claim to have one
 end
 
 @testset "couple — connect validation" begin
@@ -244,6 +266,11 @@ end
     dUs = similar(Us)
     cm_sum(dUs, Us, nothing, 0.0)
     @test dUs[state_index(cm_sum, :R_acc)] == 5.0 + 1.0          # c + d
+    # Cross-sectional sum, NOT a running total: the slot is reset to zero before each eval, so
+    # repeated evaluation gives the same answer. Without the reset this drifts to 12, 18, ...
+    cm_sum(dUs, Us, nothing, 0.0)
+    cm_sum(dUs, Us, nothing, 0.0)
+    @test dUs[state_index(cm_sum, :R_acc)] == 5.0 + 1.0
 
     # share owner-last: only the owner's derivative reaches the shared slot.
     cm_sh = couple(
@@ -259,6 +286,55 @@ end
     @test dUsh[state_index(cm_sh, :Q_w)] == 10.0 - 0.0            # Q's w driven by shared v
     cm_sh(dUsh, Ush, nothing, 0.0)                               # warm up
     @test (@allocated cm_sh(dUsh, Ush, nothing, 0.0)) == 0        # share path (frozen zeroing) allocation-free
+end
+
+# Shares are resolved as equivalence classes, not pairwise, so a state may take part in several
+# share edges and the whole group still collapses to ONE global slot. Before this was union-find,
+# a second edge touching an already-shared state silently split the group and left the surviving
+# slot with an identically-zero derivative.
+@testset "couple — multi-way share topologies" begin
+    # Fan-out from the owner: P.v ≡ Q.v ≡ R.v is a single slot governed by P.
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoQ(); name = :Q), Subsystem(_MonoR(); name = :R)]
+    edges = [share(:P => :v, :Q => :v; owner = :P), share(:P => :v, :R => :v; owner = :P)]
+    cm = couple(nodes, edges)
+    @test num_states(cm) == 4                                   # a, v, Q_w, R_s — one shared v
+    @test state_names(cm) == (:a, :v, :Q_w, :R_s)
+    vslot = state_index(cm, :v)
+    @test cm.layout.solution_indices.Q[1] == vslot               # every member maps to the same slot
+    @test cm.layout.solution_indices.R[1] == vslot
+    @test cm.layout.operator_order[end] == :P                    # owner steps last
+
+    U = default_initial_state(cm)                                # [a=1, v=10, Q_w=0, R_s=0]
+    @test U[vslot] == 10.0                                       # IC comes from the owner
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test dU[vslot] == -_MONO_K * (10.0 - 1.0)                   # P governs; 12345 and 777 discarded
+    @test dU[state_index(cm, :Q_w)] == 10.0 - 0.0                # non-owners still READ the shared v
+    @test dU[state_index(cm, :R_s)] == 2 * 10.0
+    cm(dU, U, nothing, 0.0)                                      # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0              # multi-way share stays allocation-free
+
+    # Declaration order of the nodes must not change the physics: the owner may be listed last.
+    cm_reordered = couple(
+        [Subsystem(_MonoQ(); name = :Q), Subsystem(_MonoR(); name = :R), Subsystem(_MonoP(); name = :P)],
+        edges,
+    )
+    @test num_states(cm_reordered) == 4
+    @test state_names(cm_reordered) == (:v, :w, :R_s, :P_a)      # shared slot keeps the owner's name
+    Ur = default_initial_state(cm_reordered)
+    dUr = similar(Ur)
+    cm_reordered(dUr, Ur, nothing, 0.0)
+    @test dUr[state_index(cm_reordered, :v)] == -_MONO_K * (10.0 - 1.0)   # still P's equation
+    @test cm_reordered.layout.operator_order[end] == :P
+
+    # A chained share names one group through two edges, so the two `owner=`s contradict each
+    # other. That must be an actionable error, never a silently split layout.
+    @test_throws ArgumentError couple(
+        nodes, [share(:P => :v, :Q => :v; owner = :P), share(:Q => :v, :R => :v; owner = :Q)]
+    )
+
+    # A component whose state_names and default_initial_state disagree is caught at couple time.
+    @test_throws ArgumentError couple([Subsystem(_BadLength(); name = :X)])
 end
 
 @testset "couple — non-contiguous block" begin
