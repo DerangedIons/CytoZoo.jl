@@ -8,7 +8,7 @@ makedocs(;
     authors="Kyle Beggs (beggskw@gmail.com) and contributors",
     sitename="CytoZoo.jl",
     format=Documenter.HTML(;
-        canonical="https://kylebeggs.github.io/CytoZoo.jl",
+        canonical="https://derangedions.github.io/CytoZoo.jl",
         edit_link="main",
         assets=String[],
     ),
@@ -18,6 +18,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/kylebeggs/CytoZoo.jl",
+    repo="github.com/DerangedIons/CytoZoo.jl",
     devbranch="main",
 )

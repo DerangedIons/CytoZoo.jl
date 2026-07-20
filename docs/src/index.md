@@ -4,7 +4,7 @@ CurrentModule = CytoZoo
 
 # CytoZoo
 
-Documentation for [CytoZoo](https://github.com/kylebeggs/CytoZoo.jl).
+Documentation for [CytoZoo](https://github.com/DerangedIons/CytoZoo.jl).
 
 ```@index
 ```

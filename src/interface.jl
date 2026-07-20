@@ -8,6 +8,13 @@ Every concrete model must implement:
 - [`transmembrane_potential_index`](@ref)
 - [`default_initial_state`](@ref)
 
+A **composite** model (e.g. `CoupledModel`) merges its components' states into one
+global vector, so it implements the state-side methods above; but its parameters stay
+on the individual components rather than in a single flat vector. `num_parameters`
+(and `parameter_names`) are therefore required only for **atomic** models — a composite
+leaves them undefined, so calling one raises a `MethodError` and
+`hasmethod(num_parameters, Tuple{typeof(model)})` correctly reports `false`.
+
 # Element-type genericity
 
 A model's RHS must compute in the element type of its state vector, so a `Float32`
@@ -48,7 +55,9 @@ function num_states end
 """
     num_parameters(model::AbstractCellModel) -> Int
 
-Total number of model parameters.
+Total number of model parameters. Required for atomic models; a composite model
+(e.g. `CoupledModel`) has no single flat parameter vector and leaves this undefined,
+so calling it raises a `MethodError`.
 """
 function num_parameters end
 
@@ -98,6 +107,20 @@ Tuple of all parameter names in order.
 """
 function parameter_names end
 
+"""
+    writable_parameters(model::AbstractCellModel) -> AbstractVector
+
+The mutable parameter vector a `connect` edge writes its staged input into (indexed by
+[`parameter_index`](@ref)). Defaults to the model's `parameters` field.
+
+**Connect-participation contract.** To receive a [`connect`](@ref) edge, a model must
+implement [`parameter_index`](@ref) (to name the target slot) and expose
+`writable_parameters` (the vector the coupling writes into, which the model's functor
+reads). `couple` deepcopies each connect receiver, so a coupling scratches a private
+copy and never mutates the caller's model instance.
+"""
+writable_parameters(model::AbstractCellModel) = model.parameters
+
 # ---------------------------------------------------------------------------
 # Optional interface — Rush-Larsen
 # ---------------------------------------------------------------------------
@@ -119,22 +142,36 @@ or `SpatialContext` for per-cell spatial variation. Only available when
 function rush_larsen_step! end
 
 # ---------------------------------------------------------------------------
-# Internal — monitors (unexported; no model implements these yet)
+# Optional interface — monitors (DERIVED observables)
 # ---------------------------------------------------------------------------
+#
+# Derived/monitored quantities are algebraic functions of the state (e.g. conservation-law
+# values like `ATPm = C_A - ADPm`) surfaced as observables. A model opts in by overriding all
+# three hooks; the post-solve `monitor_history(sol, model)` helper (SciMLBase extension) walks
+# the saved solution and collects them. Defaults make a non-implementing model report zero
+# monitors, so the helper returns an empty result rather than erroring.
 
 """
     num_monitors(model::AbstractCellModel) -> Int
 
-Number of derived/monitored quantities the model can compute. Internal hook —
-not exported until a model ships a real `monitor_values!` implementation.
+Number of derived/monitored quantities the model can compute. Defaults to `0`; override
+alongside [`monitor_names`](@ref) and [`monitor_values!`](@ref) to opt in.
 """
 num_monitors(::AbstractCellModel) = 0
 
 """
+    monitor_names(model::AbstractCellModel) -> NTuple{N, Symbol}
+
+Names of the derived/monitored quantities, in the order [`monitor_values!`](@ref) writes
+them (length `num_monitors(model)`). Defaults to `()`; mirrors [`state_names`](@ref).
+"""
+monitor_names(::AbstractCellModel) = ()
+
+"""
     monitor_values!(mon, u, t, model::AbstractCellModel) -> Nothing
 
-Compute derived quantities from state `u` at time `t` and store in `mon`. Internal
-hook — not exported until a model implements it.
+Compute derived quantities from state `u` at time `t` and store the `num_monitors(model)`
+values in `mon`. Reads parameters from `model` (struct fields), not from a `p` argument.
 """
 function monitor_values! end
 
@@ -179,4 +216,3 @@ position-independent — it must not dereference `x`, so that `s(nothing, t)`
 works. Subtypes that index `x` are only valid under a `SpatialContext`.
 """
 abstract type AbstractStimulus end
-
