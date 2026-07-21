@@ -4,4 +4,7 @@
 /Manifest*.toml
 /docs/Manifest*.toml
 /docs/build/
+/docs/node_modules/
+/docs/src/.vitepress/cache/
+/docs/src/.vitepress/dist/
 /examples/Manifest*.toml

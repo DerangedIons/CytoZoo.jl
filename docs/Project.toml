@@ -1,6 +1,14 @@
 [deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 CytoZoo = "ff4ab244-b974-488c-a5cc-2c6c87261b37"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
+OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
+CairoMakie = "0.15"
 Documenter = "1.17"
+DocumenterVitepress = "0.3"
+OrdinaryDiffEq = "6, 7"
+StaticArrays = "1.9"

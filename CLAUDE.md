@@ -73,7 +73,7 @@ Layout naming: the first component's states keep bare names; others are prefixed
 
 ### Variable roles — and why switching is just composition
 
-Every coupled variable has a **role** in the combined ODE/DAE system, and coupling **changes its role** when models are composed: a **state** (integrated variable) ↔ a global slot; a **parameter** (fixed input) ↔ a parameter slot; a **derived** quantity (algebraic function of state, e.g. a conservation law) ↔ the monitor hooks; an **input** (driven live by another model each RHS call) ↔ a `connect` edge. The CytoZoo primitives **are** the role changes — `share` merges two states into one slot, `connect` turns a parameter into an input, monitors surface a derived quantity, `couple` composes — so the architecture's coupling needs no new primitive. The README "Variable roles" table is the canonical version.
+Every coupled variable has a **role** in the combined ODE/DAE system, and coupling **changes its role** when models are composed: a **state** (integrated variable) ↔ a global slot; a **parameter** (fixed input) ↔ a parameter slot; a **derived** quantity (algebraic function of state, e.g. a conservation law) ↔ the monitor hooks; an **input** (driven live by another model each RHS call) ↔ a `connect` edge. The CytoZoo primitives **are** the role changes — `share` merges two states into one slot, `connect` turns a parameter into an input, monitors surface a derived quantity, `couple` composes — so the architecture's coupling needs no new primitive. The "Variable roles" table in `docs/src/guides/coupling/index.md` is the canonical version.
 
 **Switching is composition.** The only mechanism to turn an optional capability on or off is to compose with or without it — a whole **subsystem** (a `Subsystem` node) or a single **edge**. Omitting it recovers the baseline (the OFF-invariant is literally "compose without it"). There is **no switch primitive, no construction-time switch kwarg, and no "module-switch protocol"** — anything switchable is modeled as a subsystem you include or leave out (a prototyped `switch=`/`switches=` API was removed as redundant with composition). A model's *own* internal on/off is a private implementation detail of that model, not a CytoZoo concept. Composition resolves at `couple()`/construction, never through `p`/`SpatialContext` (the time/space-varying payload). This is exactly what the ECCMitoRedox architecture's §3 OFF-invariants require — each module OFF must recover a validated baseline — which composition gives for free. The canonical demonstration is sockets 6–8 of `examples/coupling_mwe.jl` (module / edge / state↔param, all by include-or-omit).
 
@@ -113,6 +113,14 @@ Package extensions:
 4. Add interface methods (functor with `p::Nothing` and `p::SpatialContext` dispatches, num_states, etc.)
 5. Add `rush_larsen_step!` with `p` argument if applicable
 6. Include in `src/CytoZoo.jl` and export
+
+### Documentation
+
+Built with **Documenter + DocumenterVitepress** (`docs/make.jl`); `docs/Project.toml` carries OrdinaryDiffEq, CairoMakie, and StaticArrays so guide examples execute for real. Build locally with `julia --project=docs docs/make.jl`; set `VITEPRESS_DEV=1` to skip the Node/Vitepress stage and run only Documenter (fast iteration — catches `@example` failures, broken `@ref`s, and `checkdocs=:exports`). `docs/node_modules/` is gitignored; `docs/package.json` pins the Vitepress/MathJax toolchain.
+
+Structure mirrors RadialBasisFunctions.jl: `index.md` (Vitepress hero) → `getting_started.md` (one linear tutorial, ending in **Current Limitations**) → `guides/` (task-oriented; coupling is a nested sub-tree) → `reference/` (`models.md`, `design.md`, `internals.md`, `api.md`).
+
+Conventions that matter: **code examples are live `@example` blocks** — one named namespace per page, since Documenter shares state per page, not across pages; pages needing the coupling toy models redefine them in a `@setup` block. `reference/api.md` uses topic-grouped `@docs` blocks plus `@autodocs Public=false` for internals — every export must appear there or `checkdocs=:exports` fails the build. Prose lives in the docs; **the README is a taster only** (pitch, install, one quick start, links). ADRs in `docs/adr/` stay outside the rendered site as the archival record, with the user-facing summary in `reference/design.md` — keep both in sync.
 
 ### Testing
 

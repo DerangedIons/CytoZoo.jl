@@ -2,8 +2,11 @@
 
 **Status:** accepted · **Date:** 2026-07-20 · **Supersedes:** `coupling-redesign.md` (deleted)
 
-Architecture Decision Records live outside `docs/src/`, so they are not part of the rendered
-documentation site — they record *why* a decision was made for future maintainers.
+Architecture Decision Records live outside `docs/src/`, so the ADR files themselves are not
+part of the rendered documentation site. This ADR is the **archival record** — full context,
+supersession history, and the reasoning as it stood at decision time. A user-facing summary of
+the same decisions is published on the site at `docs/src/reference/design.md`; keep the two in
+sync when a decision changes.
 
 ## Context
 

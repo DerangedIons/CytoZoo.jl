@@ -1,14 +1,71 @@
-```@meta
-CurrentModule = CytoZoo
+```@raw html
+---
+layout: home
+
+hero:
+  name: CytoZoo.jl
+  text: Cardiac Cell Models, One Interface
+  tagline: Hand-coded cell models you can swap, make spatially heterogeneous, and compose into coupled systems — with zero runtime dependencies.
+  image:
+    src: /logo.svg
+    alt: CytoZoo.jl
+  actions:
+    - theme: brand
+      text: Get Started
+      link: /getting_started
+    - theme: alt
+      text: View on GitHub
+      link: https://github.com/DerangedIons/CytoZoo.jl
+
+features:
+  - icon: ⇄
+    title: One Interface, Many Models
+    details: Every model is a callable struct with the same contract, so swapping ToRORd for another model is a one-line change. Models in other packages adhere natively — no adapter needed.
+  - icon: ⊕
+    title: Compose, Then Solve Monolithically
+    details: "Join models into a graph with share and connect edges. The result is a single ODE right-hand side solved by one solver: no operator-splitting error, and stiff systems can use one implicit method throughout."
+  - icon: ∅
+    title: Zero Dependencies
+    details: The base package is pure Julia arithmetic. Flat parameter vectors and generic element types keep models isbits-friendly and GPU-ready; solver and tissue integrations arrive as package extensions.
+---
 ```
 
-# CytoZoo
+## Quick Start
 
-Documentation for [CytoZoo](https://github.com/DerangedIons/CytoZoo.jl).
+```julia
+using CytoZoo, OrdinaryDiffEq
 
-```@index
+model = ToRORd()                          # endocardial cell, Float64
+prob  = ODEProblem(model, (0.0, 1000.0))  # uses the model's default initial state
+sol   = solve(prob, Tsit5())
+
+sol[state_index(model, :v), end]          # transmembrane potential at t = 1000 ms
 ```
 
-```@autodocs
-Modules = [CytoZoo]
+Every model exposes its state and parameter layout by name:
+
+```julia
+state_names(model)                 # (:v, :jca, :m, :mL, ...)
+state_index(model, :v)             # 1
+model.parameters[parameter_index(model, :GNa)] = 11.0
 ```
+
+## Available Models
+
+| Model | States | Parameters | Cell types | Rush-Larsen |
+|-------|--------|------------|------------|-------------|
+| [`ToRORd`](@ref) | 65 | 177 | endocardial, epicardial, midmyocardial | yes |
+
+Further models live in their own packages and adhere to the interface natively — see the
+[Model Catalog](reference/models.md).
+
+## Installation
+
+```julia
+using Pkg
+Pkg.add("CytoZoo")
+```
+
+Requires Julia 1.10 or later. Solving needs a SciMLBase stack such as
+[OrdinaryDiffEq.jl](https://github.com/SciML/OrdinaryDiffEq.jl); the base package itself has no
+runtime dependencies.
