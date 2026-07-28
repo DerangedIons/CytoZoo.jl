@@ -83,6 +83,7 @@ share(:A => :d, :B => :x; owner = :A)            # one variable, owner's equatio
 share(:A => :d, :B => :x; owner = :A, name = :ATP)   # name the global slot
 
 connect(:A => :v, :B => :v_ext)                  # dataflow: state -> parameter slot
+connect(:A => :adp, :B => :adp_ext)              # source may be a monitor (derived) too
 connect(:A => :j, :B => :flux; op = +)           # sum several sources into one slot
 
 coupled = couple(nodes, edges)

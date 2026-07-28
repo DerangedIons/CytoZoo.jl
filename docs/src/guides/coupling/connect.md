@@ -135,6 +135,67 @@ The rules for combining edges into one slot are strict, and violations are rejec
 Because edges are partitioned by operation once at construction, the per-evaluation write has
 no dynamic dispatch and no allocation.
 
+## Derived Sources
+
+A connect source does not have to be a state. It can also be a **monitor** — a derived quantity
+the source model computes algebraically from its own state (see
+[Derived Observables](../monitors.md)).
+
+This is what wires a quantity that a conservation law determines. A model tracking a conserved
+pool integrates one side and derives the other: cytosolic ADP is not a state anywhere, it is
+`C_A - ATP`. Declaring it as a monitor makes it wirable:
+
+```@example connect
+const C_A = 8.0
+
+struct Pool <: AbstractCardiacCellModel end
+CytoZoo.num_states(::Pool)                    = 1
+CytoZoo.state_names(::Pool)                   = (:atp,)
+CytoZoo.default_initial_state(::Pool)         = [3.0]
+CytoZoo.state_index(::Pool, n::Symbol)        = findfirst(==(n), (:atp,))
+CytoZoo.transmembrane_potential_index(::Pool) = 1
+(::Pool)(du, u, p, t) = (du[1] = -u[1]; nothing)
+
+# `adp` is DERIVED — the law lives here, in the model that owns the pool
+CytoZoo.num_monitors(::Pool)  = 1
+CytoZoo.monitor_names(::Pool) = (:adp,)
+CytoZoo.monitor_values!(mon, u, t, ::Pool) = (mon[1] = C_A - u[1]; nothing)
+
+derived = couple(
+    [Subsystem(Pool();   name = :P),
+     Subsystem(Reader(); name = :R)],
+    [connect(:P => :adp, :R => :d_ext)],     # a monitor, not a state
+)
+
+state_names(derived), num_states(derived)
+```
+
+Wiring `adp` added no state — it is recomputed from `atp` on every evaluation, so it always
+agrees with the pool. The alternative, promoting it to an integrated variable with
+`d(adp)/dt = -d(atp)/dt`, would add a state the law already determines and let round-off drift
+break the closure.
+
+Keeping the law inside the model matters for more than tidiness. It reads that model's live
+parameters, so changing `C_A` changes the wire; a constant restated at the edge would silently
+go stale. And the same declaration serves both roles — `monitor_history` plots `adp` post-solve
+whether or not anything is wired to it.
+
+A monitor can depend on several states, on `t`, and on the model's parameters — anything
+`monitor_values!` can compute.
+
+Three things to know:
+
+- **Resolution order.** Names resolve against `state_names` first, then `monitor_names`. A
+  component declaring the same name in both is rejected at `couple()` time as ambiguous.
+- **Cost.** `monitor_values!` computes a model's *whole* monitor vector, once per evaluation per
+  sourcing component. Wiring one monitor of a model with hundreds pays for all of them.
+- **A monitor source cannot also receive an edge.** Monitors are computed in a single pass
+  before any parameter is staged, so a monitor reading a staged slot would see the previous
+  evaluation's value. `couple()` rejects the overlap rather than lagging silently.
+
+`share` is unaffected by any of this: it merges *states*, and a monitor has no derivative to
+own. Naming one as a share endpoint is an error.
+
 ## Receivers Are Copied
 
 `couple` **deepcopies every connect receiver**. Staging an input mutates a private copy, never

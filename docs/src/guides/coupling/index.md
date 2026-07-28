@@ -61,7 +61,8 @@ combined system has a **role**, and *coupling changes roles*:
 The coupling primitives *are* the role changes:
 
 - [`share`](@ref) merges two **states** into one global slot.
-- [`connect`](@ref) turns a **parameter** into an **input**.
+- [`connect`](@ref) turns a **parameter** into an **input**, sourced from a **state** or a
+  **derived** quantity.
 - The monitor hooks surface a **derived** quantity — see [Derived Observables](../monitors.md).
 - [`couple`](@ref) composes.
 

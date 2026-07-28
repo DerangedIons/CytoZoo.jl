@@ -2,7 +2,7 @@
 
 This page catalogues the coupling patterns that arise when composing real cell models, and
 shows how each maps onto CytoZoo's primitives. Every pattern marked ✅ runs live below; the
-two marked ❌ are not expressible yet and are covered in [Limitations](limitations.md).
+one marked ❌ is not expressible yet and is covered in [Limitations](limitations.md).
 
 | Pattern | What changes role | Primitive | Status |
 |---|---|---|---|
@@ -12,8 +12,8 @@ two marked ❌ are not expressible yet and are covered in [Limitations](limitati
 | Edge on/off | single edge included or omitted | composition | ✅ |
 | State ↔ parameter flip | parameter ⇄ state | composition | ✅ |
 | Derived observable | state → derived | monitor hooks | ✅ |
+| Derived-source wire | derived → parameter | `connect` (monitor source) | ✅ |
 | Additive contributed flux | two equations into one derivative | — | ❌ |
-| Derived-source wire | derived → parameter | — | ❌ |
 
 ## The Running Example
 

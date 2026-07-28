@@ -1,127 +1,46 @@
-# CLAUDE.md
+# CytoZoo.jl
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Uniform interface for cardiac cell models, plus a graph-based coupling system that composes
+several models into one monolithically-solved ODE.
 
-## What is CytoZoo?
+## Key files
+- interface contract and monitor hooks: `src/interface.jl`
+- coupling graph (`couple`, `share`, `connect`, `CoupledModel`): `src/coupling.jl`
+- spatial context and GPU-safe spatial functors: `src/spatial.jl`
+- stimulus types: `src/stimulus.jl`
+- models, one directory each: `src/models/<name>/` (`<Name>.jl`, `parameters.jl`, `states.jl`, `rhs.jl`, `rush_larsen.jl`, `monitors.jl`)
+- extensions: `ext/SciMLBaseExt.jl` (ODEProblem + `monitor_history`), `ext/ForwardDiffExt.jl`, `ext/ThunderboltExt.jl`
 
-A Julia package providing a registry of cardiac cell models with a common functor-based interface. Models are hand-coded callable structs implementing the interface. Works standalone with DifferentialEquations.jl and integrates with Thunderbolt.jl via a package extension and with TWorld.jl via native interface adherence. Zero runtime dependencies in the base package.
+## Traps
+- **ForwardDiff derivatives taken *through* a `connect` edge silently lose the coupling term.** `ext/ForwardDiffExt.jl` extracts the primal of a `Dual` so the input is frozen within a Newton step — correct fixed point, approximate Jacobian. Consequence: sensitivity analysis and gradient-based parameter fitting across a `connect` are **wrong, not merely slow**. `share` is unaffected (it flows through `U`). Fix, if it becomes load-bearing, is a `PreallocationTools.DiffCache` on the receiver's parameter vector — not built.
+- **A `CoupledModel` is not thread-safe to solve concurrently.** `couple` deepcopies each connect receiver, but a single `cm` still stages into shared scratch — deepcopy the `cm` per trajectory in an `EnsembleProblem` `prob_func`.
+- **A `connect` source resolves against states first, then monitors.** A DERIVED quantity (conservation-law complement, etc.) is wired by declaring it as a monitor on the model that owns the law — no per-edge transform exists or is wanted. Monitor sources are resolved in a single pre-pass before any staging, which is why a monitor source may **not** also receive a `connect` edge (rejected at `couple` time; it would lag by one eval). Wiring one monitor computes that model's whole monitor vector.
+- **`share` is hard-discard: one owner governs the slot**, non-owners' derivative contributions are zeroed. It *cannot* sum contributions from two models into one derivative. Don't treat "a shared state has exactly one governing equation" as a permanent invariant — additive share / flux-injection is a known gap.
+- **Switching is composition — there is no switch primitive.** Turn a capability on/off by composing with or without a `Subsystem` node or an edge. No construction-time `switch=` kwarg exists (a prototype was removed as redundant).
+- `num_parameters` / `parameter_names` are deliberately **left undefined** on `CoupledModel`, so calling one is a truthful `MethodError` and `hasmethod` reports `false`. Don't "fix" that by adding a throwing method.
+- `state_index` / `parameter_index` must return `nothing` for an unknown name — `couple`'s validation depends on that convention.
+- Multi-node coupling graphs need explicit `Subsystem(model; name=...)`; the `gensym` default only works for a single node.
+- In RHS bodies, watch the name collisions: Faraday's constant is `F_param`, temperature `T_val`, celltype `celltype_val`.
+- ToRORd's ~492 ArmyHeart monitors are **not ported** (`TORORD_NUM_MONITORS = 0`); `src/models/torord/monitors.jl` is a stub.
 
-## Commands
+## Working on coupling
+Drive coupling-API changes with `examples/coupling_mwe.jl` (+ `examples/coupling_mwe.md`) — a small
+toy pair exercising the full coupling taxonomy — **not** the 101-state ECCMitoRedox model.
+Rationale for the architecture (why MTK was dropped, why operator splitting was measured and
+abandoned for a monolithic RHS) is in `docs/adr/0001-coupling-architecture.md`; the canonical
+variable-roles table is in `docs/src/guides/coupling/index.md`; a code-level tour is in
+`handoffs/2026-07-16-0745-coupling-infrastructure-tour.md`.
 
-```bash
-# Run tests
-julia --project=. -e "using Pkg; Pkg.test()"
+## Docs
+Documenter + DocumenterVitepress. Set `VITEPRESS_DEV=1` to skip the Node stage and run Documenter
+only — fast iteration that still catches `@example` failures, broken `@ref`s, and `checkdocs=:exports`.
+Examples are live `@example` blocks with one namespace per page (Documenter shares state per page,
+not across pages). Every export must appear in `docs/src/reference/api.md` or the build fails.
+Prose belongs in the docs; the README is a taster only. Keep `docs/adr/` and
+`docs/src/reference/design.md` in sync.
 
-# Format (Runic) — install once: julia -e 'using Pkg; Pkg.Apps.add("Runic")'
-runic --inplace src test          # or: julia -m Runic --inplace src test
-
-# Load and quick-test
-julia --project=. -e "using CytoZoo; m = ToRORd(); du = similar(default_initial_state(m)); m(du, default_initial_state(m), nothing, 0.0); println(du[1])"
-```
-
-## Architecture
-
-### Interface (src/interface.jl)
-
-Type hierarchy: `AbstractCellModel` → `AbstractCardiacCellModel` → concrete models (e.g., `ToRORd`).
-
-**Functor-first design** — no separate `cell_rhs!`. The model IS a callable struct that dispatches on `p`:
-```julia
-(model::ToRORd)(du, u, ::Nothing, t)          # non-spatial (parameters on struct)
-(model::ToRORd)(du, u, p::SpatialContext, t)   # spatial (per-cell variation via p)
-```
-
-The contract is **tiered** — the flat "required/optional" split under-describes what coupling needs:
-
-- **Core** (every model): functor, `default_initial_state`, `state_names`, `transmembrane_potential_index`.
-- **Atomic models** (anything with a flat parameter vector): `num_states`, `num_parameters`, `parameter_names`. A composite (`CoupledModel`) leaves `num_parameters`/`parameter_names` **undefined** — calling one is a `MethodError` and `hasmethod` correctly reports `false`.
-- **Coupling participants**: `state_index` (share owners and connect sources); `parameter_index` + `writable_parameters` (connect receivers only). Both are validated at `couple()` time with actionable errors. Note `couple` never calls `num_states`/`num_parameters` on a component — the layout is derived from `state_names` + `default_initial_state`.
-
-Optional: `has_rush_larsen`/`rush_larsen_step!` (signature: `rush_larsen_step!(u_new, u, p, t, dt, model)`), and the monitor triple `num_monitors`/`monitor_names`/`monitor_values!` (exported; a model opts in by overriding all three). `state_index`/`parameter_index` return `nothing` for an unknown name — `couple`'s validation depends on that convention.
-
-`SpatialContext{X, SF}` carries per-cell position (`x`) and spatial parameter overrides (`overrides` NamedTuple) through the DiffEq `p` argument. Spatial functions can be scalars, callables, or isbits functors (`<: SpatialFunction`). The internal RHS uses `_resolve_spatial` to handle all three and dispatches on `overrides::F` — when `F === Nothing`, all spatial branches compile away (zero overhead). GPU-compatible when all fields are isbits.
-
-### Model layout (src/models/torord/)
-
-Each model lives in its own directory with a standard file structure:
-- `ToRORd.jl` — struct, constructors, functor, interface methods
-- `parameters.jl` — `TORORD_PARAMETER_NAMES` tuple, `TORORD_PARAM_INDEX` Dict, `_torord_init_parameters!`
-- `states.jl` — same pattern for states
-- `rhs.jl` — `_torord_rhs_impl!(du, u, parameters, celltype, x, t, overrides::F) where {T, F}`
-- `rush_larsen.jl` — `_torord_rush_larsen_impl!` (same signature + `dt`)
-- `monitors.jl` — derived quantities (stubbed, TODO: port from ArmyHeart)
-
-Parameters are stored as flat vectors on the struct for GPU compatibility. Named access via `parameter_index(model, :GNa)`. The type parameter `T` is the element type of the vectors; `F` is the overrides type (Nothing or NamedTuple).
-
-Naming collision avoidance in the RHS: Faraday's constant → `F_param`, temperature → `T_val`, celltype → `celltype_val` (after spatial function resolution).
-
-### Spatial context (src/spatial.jl)
-
-GPU-safe isbits spatial functor types for use with `SpatialContext`: `Constant`, `SpatialStep`, `SpatialGradient`. All `<: SpatialFunction`. Users can define custom isbits callables `f(x, t) -> T` for GPU compatibility, or use closures for CPU-only simulations.
-
-### Coupling (src/coupling.jl)
-
-Compose two or more `AbstractCellModel`s into one combined model with a shared global state. Coupling is expressed as a **graph**: `Subsystem` nodes (a model + a `name`) joined by directed **edges**. `CoupledModel <: AbstractCardiacCellModel` and is a **real functor** `(cm)(dU, U, p, t)` assembled from the submodels, so couplings nest *and* a coupling is solved monolithically with a single ODE solver. The base `src/coupling.jl` is pure Julia (no solver dep): `couple(nodes, edges)` builds the node NamedTuple (keyed by node name), partitions `edges` by type, validates names, precomputes the global-state layout (per-component `solution_indices`, canonical names, ICs, operator order), and builds the per-component **execution plan** (a concretely-typed tuple of `CompEntry` stored on the `CoupledModel`) that the functor walks: each submodel writes into its `view` of the shared `dU`/`U`, connect inputs are read live from `U` (`_connect!`), and non-owned shared-slot derivatives are zeroed (`frozen`) so the owner's write — last, by `operator_order` — wins. **Solve path:** `ODEProblem(cm, tspan)` + `solve(prob, alg)` (via `ext/SciMLBaseExt.jl`) — one solver over the whole system, no splitting error, stiff-capable. `num_parameters`/`parameter_names` are left undefined (a composite has no single parameter vector), so calling one is a truthful `MethodError` rather than a method that only throws. Shares are resolved as **equivalence classes** via union-find over `(component, state)` keys (`_share_classes`), so a state may appear in several share edges and the whole group still collapses to one slot; a class declaring two different owners is rejected at `couple()` time. The plan-building helpers `_frozen_indices`/`_connect_plan` take raw `(components, parent/classes or connects, ck)` so the plan can be assembled at `couple()` time.
-
-`Subsystem(model; name = gensym(:subsystem))` — multi-node graphs whose edges reference nodes must pass explicit `name=` (the `gensym` default is only ergonomic for a single node). First node = primary component (bare state names + `vm_index`).
-
-Two edge kinds (freely mixed in the edge list):
-- **`share`** (`share(:A => :d, :B => :x; owner = :A)`) — `A.d` and `B.x` are one variable in a single global slot. **Hard-discard**: only the owner's equation drives the slot; every non-owner's contribution to that slot's derivative is zeroed (its `frozen` local indices), so it reads the value but never writes it. The functor orders the owner last (`operator_order`) so its write into the shared slot wins. Zero authoring change. **Multi-way shares** work: fan several edges out from the owner (`share(:A=>:d, :B=>:x; owner=:A)` + `share(:A=>:d, :C=>:z; owner=:A)`) and the whole group is one slot with one governing equation, independent of node declaration order. *Chaining* edges instead (`:A`–`:B` then `:B`–`:C`) is rejected: the two `owner=`s name the same class and contradict each other.
-- **`connect`** (`connect(:A => :Vm, :B => :Vm_ext)`) — a directed dataflow edge: before `B`'s equations run, `A`'s `Vm` is written into `B`'s parameter slot `:Vm_ext` (via `_connect!`, read **live from `U`** each eval), which `B`'s functor reads. The receiver must name the slot via `parameter_index` and expose it via `writable_parameters` (interface method, default `= model.parameters`) — the only authoring change coupling imposes; both are checked at `couple()` time with an actionable error. `couple` **deepcopies each connect receiver** so staging scratches a private copy, never the caller's model instance; a single `CoupledModel` is therefore not thread-safe to solve concurrently (deepcopy the `cm` per trajectory in an `EnsembleProblem` `prob_func`) — full in-RHS reentrancy (routing connect inputs through the receiver's per-eval `p`/overrides) is a tracked follow-up. Carries an operation `op`: `overwrite` (default, copy) or `+` (sum all `+` edges into one slot — reset to zero then summed each eval, a cross-sectional sum, not a running total); mixing `overwrite`/`+` or multiple `overwrite`s into one slot is rejected at `couple()` time, as are other ops. `_connect_plan` partitions edges by op into homogeneous `overwrites`/`adds` lists, so the per-eval write has no dynamic dispatch or allocation. Under an implicit solver the connect read passes through `_connect_value` — identity in base, but `ext/ForwardDiffExt.jl` extracts the primal of a `Dual` so the input is frozen within the Newton step (a `Dual` is never stored in the receiver's `Float64` slot). Consequences: correct fixed point but an approximate Jacobian, so a tightly-coupled stiff `connect` may converge poorly; and — more sharply — **any ForwardDiff derivative taken *through* a connect edge silently loses the coupling term**, so sensitivity analysis and gradient-based parameter fitting across a `connect` are wrong, not merely slow. `share` is unaffected (it flows through `U`). The standard fix if this becomes load-bearing is `PreallocationTools.DiffCache` for the receiver's parameter vector; not built.
-
-Layout naming: the first component's states keep bare names; others are prefixed (`:B_y`); shared slots take the owner's name (or an explicit `name=`). Architectural rationale — why MTK was dropped and why operator splitting was built, measured, and abandoned for the monolithic RHS — in `docs/adr/0001-coupling-architecture.md`; code-level tour in `handoffs/2026-07-16-0745-coupling-infrastructure-tour.md`; minimal 2-pattern demo in `examples/coupling_toy.jl`. The **canonical API driver** is `examples/coupling_mwe.jl` (+ `examples/coupling_mwe.md`): a toy `ToyDriver`/`ToyResponder` pair (~8 states, plus optional `ToyRedox`/`ToyH` subsystems) exercising the *full* coupling taxonomy from the ECCMitoRedox architecture — feedforward WIREs, share/adopt-native, monitors, and module on/off by **subsystem composition** (compose with/without an optional subsystem or edge) all run live; the not-yet-expressible patterns (additive contributed-flux into a shared derivative; DERIVED-source `connect`) are written as executable target-API specs. Use it to drive coupling-API changes instead of the 101-state ECCMitoRedox model.
-
-### Variable roles — and why switching is just composition
-
-Every coupled variable has a **role** in the combined ODE/DAE system, and coupling **changes its role** when models are composed: a **state** (integrated variable) ↔ a global slot; a **parameter** (fixed input) ↔ a parameter slot; a **derived** quantity (algebraic function of state, e.g. a conservation law) ↔ the monitor hooks; an **input** (driven live by another model each RHS call) ↔ a `connect` edge. The CytoZoo primitives **are** the role changes — `share` merges two states into one slot, `connect` turns a parameter into an input, monitors surface a derived quantity, `couple` composes — so the architecture's coupling needs no new primitive. The "Variable roles" table in `docs/src/guides/coupling/index.md` is the canonical version.
-
-**Switching is composition.** The only mechanism to turn an optional capability on or off is to compose with or without it — a whole **subsystem** (a `Subsystem` node) or a single **edge**. Omitting it recovers the baseline (the OFF-invariant is literally "compose without it"). There is **no switch primitive, no construction-time switch kwarg, and no "module-switch protocol"** — anything switchable is modeled as a subsystem you include or leave out (a prototyped `switch=`/`switches=` API was removed as redundant with composition). A model's *own* internal on/off is a private implementation detail of that model, not a CytoZoo concept. Composition resolves at `couple()`/construction, never through `p`/`SpatialContext` (the time/space-varying payload). This is exactly what the ECCMitoRedox architecture's §3 OFF-invariants require — each module OFF must recover a validated baseline — which composition gives for free. The canonical demonstration is sockets 6–8 of `examples/coupling_mwe.jl` (module / edge / state↔param, all by include-or-omit).
-
-**Feedback foot-gun (not built):** some feedback couplings need two models to each contribute a term to the *same* shared state's derivative (model A's core equation + model B's extra flux). The current `share` is hard-discard (one owner governs), which cannot sum contributions — so don't bake "a shared state has exactly one governing equation" in as a permanent invariant. Resolve later via an additive/contributory `share` or flux-injection through `connect`'s `+` op, when a consumer needs it. Design + decisions in `handoffs/2026-07-16-0745-coupling-infrastructure-tour.md`.
-
-### Derived observables (monitors)
-
-DERIVED-mode quantities — algebraic functions of the state (e.g. conservation laws like `ATPm = C_A − ADPm`) — are surfaced as observables via the optional monitor hooks in `src/interface.jl`: `num_monitors` (default `0`), `monitor_names` (default `()`, mirrors `state_names`), and `monitor_values!(mon, u, t, model)` (no `p` arg — reads params from the struct). A model opts in by overriding all three. Surfaced **post-solve** by `monitor_history(sol, model)` (`ext/SciMLBaseExt.jl`) → `(; t, names, values::Matrix)` (rows = monitors, cols = `sol.t`); post-solve because the saved `sol.u` is plain (no `Dual`s), so it sidesteps `_connect_value` entirely. `CoupledModel` aggregates: `num_monitors` sums over components, `monitor_names` concatenates with the same non-primary `:<comp>_<name>` prefixing as states, and `monitor_values!` slices each component's own state (`layout.solution_indices[ck]`) — both walk `keys(cm.components)` (declaration order, not operator order) so names and values stay aligned. A 0-monitor model yields a `0×N` matrix without error. **Not ported:** ToRORd's ~492 ArmyHeart monitors (`TORORD_NUM_MONITORS = 0`). **Switching**: there is no switch primitive — switching is composition (compose with/without a subsystem or edge; see "Variable roles" above).
-
-### Native adherence vs. ext fallback
-
-Two integration patterns for model packages:
-
-1. **Native adherence (packages we own)** — the model package depends on CytoZoo and declares its types as `<: CytoZoo.AbstractCardiacCellModel`, implementing the interface methods inside the model package. Reference example: `DerangedIons/TWorld.jl` defines `TWorldCellModel{P} <: CytoZoo.AbstractCardiacCellModel` in `src/cytozoo_interface.jl` and exports it. User writes `using TWorld` and gets the CytoZoo interface for free; `using CytoZoo, TWorld, OtherModel` lets them hot-swap behind a uniform interface.
-
-2. **Ext fallback (third-party packages)** — when the upstream package can't take a CytoZoo dependency, CytoZoo writes a thin adapter in `ext/<Pkg>Ext.jl` that wraps the upstream type and implements the interface. The current `ThunderboltExt.jl` is the canonical example.
-
-### Extensions
-
-Package extensions:
-
-**SciMLBaseExt** (`ext/SciMLBaseExt.jl`) — loaded when OrdinaryDiffEq/SciMLBase is available. Adds the `ODEProblem(model, tspan; u0=..., p=...)` convenience constructor for any `AbstractCellModel` (the default coupled-solve entry point for a `CoupledModel`) and the post-solve `monitor_history(sol, model)` helper for DERIVED observables (see Derived observables above).
-
-**ForwardDiffExt** (`ext/ForwardDiffExt.jl`) — loaded when `ForwardDiff` is available (implicit solvers pull it in). Overrides `_connect_value(::Dual)` to extract the primal so a `connect` input is frozen within an implicit solver's Newton step instead of being stored as a `Dual` in the receiver's `Float64` parameter slot (see Coupling above).
-
-**ThunderboltExt** (`ext/ThunderboltExt.jl`) — Thunderbolt's `MonodomainModel` requires `ION <: Thunderbolt.AbstractIonicModel`. The extension defines `CytoZooIonicModel{M, SF} <: Thunderbolt.AbstractIonicModel` as an adapter with an optional `overrides` field. Users call `thunderbolt_model(model; overrides=nothing)` (stub in base, implemented in ext). The extension constructs `SpatialContext(x, overrides)` from the mesh position internally.
-
-### Stimulus
-
-`AbstractStimulus` (interface.jl) is the supertype for stimulus current models; the contract is a callable `(s)(x, t) -> current` returning the full `Istim`. `x` is a position vector (matching `SpatialFunction`); a stimulus used on the non-spatial path must ignore `x` so `s(nothing, t)` works. Spatial dependence is first-class — a stimulus may index `x`. Built-ins: `Stimulus{T}` (closure-free isbits periodic pulse — amplitude/period/duration/start — for GPU and Rush-Larsen) and `FunctionStimulus{F}` (wraps an arbitrary `(x, t)` function for biphasic/S1–S2/ramps; isbits iff `F` is). Models call `stim(x, t)` directly. All are owned by CytoZoo and re-exported by model packages that adhere natively (e.g., TWorld).
-
-### Adding a new model
-
-1. Create `src/models/<name>/` with the standard file structure
-2. Define struct `<: AbstractCardiacCellModel` with `parameters::T` and metadata fields
-3. Implement the internal `_<name>_rhs_impl!` with `overrides::F where {T, F}` dispatch using `_resolve_spatial` for spatial parameter resolution
-4. Add interface methods (functor with `p::Nothing` and `p::SpatialContext` dispatches, num_states, etc.)
-5. Add `rush_larsen_step!` with `p` argument if applicable
-6. Include in `src/CytoZoo.jl` and export
-
-### Documentation
-
-Built with **Documenter + DocumenterVitepress** (`docs/make.jl`); `docs/Project.toml` carries OrdinaryDiffEq, CairoMakie, and StaticArrays so guide examples execute for real. Build locally with `julia --project=docs docs/make.jl`; set `VITEPRESS_DEV=1` to skip the Node/Vitepress stage and run only Documenter (fast iteration — catches `@example` failures, broken `@ref`s, and `checkdocs=:exports`). `docs/node_modules/` is gitignored; `docs/package.json` pins the Vitepress/MathJax toolchain.
-
-Structure mirrors RadialBasisFunctions.jl: `index.md` (Vitepress hero) → `getting_started.md` (one linear tutorial, ending in **Current Limitations**) → `guides/` (task-oriented; coupling is a nested sub-tree) → `reference/` (`models.md`, `design.md`, `internals.md`, `api.md`).
-
-Conventions that matter: **code examples are live `@example` blocks** — one named namespace per page, since Documenter shares state per page, not across pages; pages needing the coupling toy models redefine them in a `@setup` block. `reference/api.md` uses topic-grouped `@docs` blocks plus `@autodocs Public=false` for internals — every export must appear there or `checkdocs=:exports` fails the build. Prose lives in the docs; **the README is a taster only** (pitch, install, one quick start, links). ADRs in `docs/adr/` stay outside the rendered site as the archival record, with the user-facing summary in `reference/design.md` — keep both in sync.
-
-### Testing
-
-Correctness tests compare CytoZoo output against ArmyHeart reference values (embedded in `test/test_torord_correctness.jl`) at `rtol=1e-10`. Performance tests verify zero allocations on the functor. SciMLBase extension tests verify `ODEProblem(model, tspan)` + `solve`. TWorld tests are conditional — skipped when TWorld is unavailable; they exercise the native-adherence path (`using TWorld` exposes `TWorldCellModel`). Source models for cross-validation live at `~/dev/ArmyHeart/` and `~/dev/TWorld/`.
+## Testing
+Correctness is checked against ArmyHeart reference values embedded in
+`test/test_torord_correctness.jl` at `rtol=1e-10`. Performance tests assert zero allocations on the
+functor. TWorld tests are conditional and skipped when TWorld is unavailable. Cross-validation
+sources live at `~/dev/ArmyHeart/` and `~/dev/TWorld/`.
