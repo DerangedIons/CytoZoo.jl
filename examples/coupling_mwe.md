@@ -33,7 +33,7 @@ Each row is a *role change* a coupling imposes. ✅ = expressible today; ❌ = d
 |---|--------|------------------|----------------|-----------------------|---------|
 | 1 | `u` | Feedforward **WIRE (overwrite)** — STATE → PARAM slot | `connect(:D=>:u, :R=>:p_u)` | Cai → K.Cai | ✅ |
 | 2 | `v` | Feedforward WIRE (overwrite) | `connect(:D=>:v, :R=>:p_v)` | Nai → K.VNai | ✅ |
-| 3 | `b` | **DERIVED-source WIRE** — DERIVED → PARAM slot | *want* `connect(:D=>:b, :R=>:p_b)` | ADPi = C_A − ATPi | ❌ |
+| 3 | `b` | **DERIVED-source WIRE** — DERIVED → PARAM slot | `connect(:D=>:b, :Redox=>:p_b)` | ADPi = C_A − ATPi | ✅ (monitor source) |
 | 4 | `a`/`e` | **Adopt-native / drop receiver state** — owner wins, other discarded | `share(:D=>:a, :R=>:e; owner=:D)` | ATPi G-native | ✅ (hard-discard `share`) |
 | 5 | `w` | **Feedback additive contributed-flux** into a shared derivative | *want* Redox's `+J` summed into D's `dw` | NADH += −V_THD; ΔΨm += +V_IMAC | ❌ |
 | 6 | redox | **Module on/off = compose with/without a subsystem** | include/omit `Subsystem(ToyRedox())` | redox_on / CII_dynamic | ✅ |
@@ -53,19 +53,22 @@ There is no switch primitive and no construction-time switch kwarg.
   (no drift).
 - **Closures.** `a + b = Ca` and `m + n = Cm` hold every step (asserted via `monitor_history`).
 
-## API backlog (the ❌ rows)
+Socket 3 needed **no change to the toy models at all**: `ToyDriver` already declared `b = Ca − a`
+as a monitor for socket 9, and a `connect` source resolves against states *then* monitors. Wiring a
+derived quantity and observing one are the same declaration — the conservation law stays inside the
+model that owns it instead of being restated at the edge.
 
-Each is a concrete design question the toy exists to settle:
+## API backlog (the ❌ row)
+
+The one concrete design question left for the toy to settle:
 
 1. **Additive / contributory share** (socket 5) — *the central feedback gap.* Let a non-owner add a
    flux into an owner's shared-slot derivative, vs. today's hard-discard. Candidate spellings:
    `share(:D=>:w, :Redox=>:w_flux; owner=:D, op=+)`, or a new `inject(:Redox=>:J, :D=>:w)` edge.
    Implementation: an accumulate-into-owner's-`dU` path in `_run!` (`src/coupling.jl`), a contributory
    alternative to the `frozen`-index zeroing.
-2. **DERIVED-source `connect`** (socket 3) — let a `connect` source resolve to a monitor/derived value
-   (compute it each RHS), not only a `state_index` (`src/coupling.jl`).
 
-Design each against this toy, then apply the finalized API to ECCMitoRedox (downstream).
+Design it against this toy, then apply the finalized API to ECCMitoRedox (downstream).
 
 ## Run
 

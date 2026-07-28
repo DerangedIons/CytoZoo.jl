@@ -84,9 +84,10 @@ overwrite(_old, new) = new
     ConnectSpec
 
 One `connect` edge: a directed dataflow link. Before component `dst` steps, the value of
-`src`'s state `src_state` (read from the global state vector) is combined into `dst`'s
-parameter slot `dst_slot` via the operation `op` (default [`overwrite`](@ref), i.e. copy).
-Build with [`connect`](@ref).
+`src`'s observable `src_state` — a **state** (read from the global state vector) or a
+**monitor** (recomputed from state each evaluation) — is combined into `dst`'s parameter slot
+`dst_slot` via the operation `op` (default [`overwrite`](@ref), i.e. copy). Build with
+[`connect`](@ref).
 """
 struct ConnectSpec{OP}
     src::Symbol
@@ -97,23 +98,43 @@ struct ConnectSpec{OP}
 end
 
 """
-    connect(src => :state, dst => :param_slot; op = overwrite)
+    connect(src => :observable, dst => :param_slot; op = overwrite)
 
-Declare a directed dataflow edge so component `dst` reads `src`'s `state` through its
-parameter slot `param_slot`. `src` and `dst` are subsystem names. `op` controls how the
-source value enters the slot each step:
+Declare a directed dataflow edge so component `dst` reads `src`'s `observable` through its
+parameter slot `param_slot`. `src` and `dst` are subsystem names.
+
+The source may be either of `src`'s observables:
+
+- a **state** — read live from the global state vector on every evaluation;
+- a **monitor** — a DERIVED quantity (see [`monitor_names`](@ref)), recomputed by `src`'s own
+  [`monitor_values!`](@ref) on every evaluation.
+
+A monitor source is how a quantity an algebraic law determines — a conserved pool's complement,
+say, `ADP = C_A - ATP` — is wired without promoting it to an integrated state. The law stays
+inside the model that owns it, so it reads that model's live parameters and needs no
+restatement at the edge. Names resolve against states first, then monitors; a component
+declaring the same name in both is rejected at `couple` time.
+
+`op` controls how the source value enters the slot each step:
 - [`overwrite`](@ref) (default) — the slot is set to the source value (copy).
 - `+` — the slot is summed across all `+` edges targeting it; it is reset to zero before
   summing each step, so it holds the per-step sum of its sources (a cross-sectional sum, not a
   running total over time).
 
-Use one op per slot: a single `overwrite`, or a homogeneous group of `+` edges. Mixing
-`overwrite` and `+` (or more than one `overwrite`) into the same slot is rejected at
-`couple` time. Other `op`s are not supported.
+Use one op per slot: a single `overwrite`, or a homogeneous group of `+` edges, mixing state
+and monitor sources freely. Mixing `overwrite` and `+` (or more than one `overwrite`) into the
+same slot is rejected at `couple` time. Other `op`s are not supported.
 
-Under an implicit solver the connect input is frozen to its primal within each Newton step
-(see `ext/ForwardDiffExt.jl`): a correct fixed point but an approximate Jacobian that omits
-the coupling term. Two consequences:
+Monitor sources cost one `monitor_values!` call per sourcing component per evaluation, which
+computes that model's **whole** monitor vector — wiring one monitor of a model with many pays
+for all of them. A component that sources a monitor may not itself receive a `connect` edge
+(rejected at `couple` time): its monitors are computed before the component walk stages any
+parameters, so a monitor reading a staged slot would silently see the previous evaluation's
+value.
+
+Under an implicit solver the connect input — state- or monitor-sourced alike — is frozen to its
+primal within each Newton step (see `ext/ForwardDiffExt.jl`): a correct fixed point but an
+approximate Jacobian that omits the coupling term. Two consequences:
 
 - A *tightly*-coupled stiff `connect` can see degraded Newton convergence (smaller steps or
   failures).
@@ -171,12 +192,15 @@ It also implements the layout/query interface (`num_states`, [`state_names`](@re
 [`state_index`](@ref), [`default_initial_state`](@ref),
 [`transmembrane_potential_index`](@ref)) so couplings nest.
 """
-struct CoupledModel{Cs <: NamedTuple, SS <: Tuple, CS <: Tuple, L <: CouplingLayout, PL <: Tuple} <: AbstractCardiacCellModel
+struct CoupledModel{Cs <: NamedTuple, SS <: Tuple, CS <: Tuple, L <: CouplingLayout, PL <: Tuple, MP <: Tuple, MS <: AbstractVector} <: AbstractCardiacCellModel
     components::Cs
     shares::SS
     connects::CS
     layout::L
     plan::PL
+    monitor_plan::MP
+    monitor_scratch::MS
+    source_scratch::MS
 end
 
 """
@@ -197,8 +221,14 @@ function couple(nodes, edges = ())
     components = _copy_connect_receivers(components, connects)
     parent, classes = _share_classes(shares)
     layout = _compute_layout(components, parent, classes)
-    plan = _build_plan(components, parent, classes, connects, layout)
-    return CoupledModel(components, shares, connects, layout, plan)
+    monitor_plan, monitor_offsets, num_mon = _build_monitor_plan(components, connects, layout)
+    plan = _build_plan(components, parent, classes, connects, layout, monitor_offsets)
+    T = eltype(layout.u0)
+    monitor_scratch = zeros(T, num_mon)
+    source_scratch = zeros(T, isempty(monitor_plan) ? 0 : maximum(e -> length(e.block), monitor_plan))
+    return CoupledModel(
+        components, shares, connects, layout, plan, monitor_plan, monitor_scratch, source_scratch
+    )
 end
 
 # Deepcopy every component that receives a `connect` edge so the monolithic RHS scratches a
@@ -266,7 +296,7 @@ function _validate_specs(components::NamedTuple, shares::Tuple, connects::Tuple)
     for cn in connects
         _check_component(comp_keys, cn.src)
         _check_component(comp_keys, cn.dst)
-        _check_state(components[cn.src], cn.src, cn.src_state)
+        _resolve_source(components[cn.src], cn.src, cn.src_state)
         dst = components[cn.dst]
         hasmethod(parameter_index, Tuple{typeof(dst), Symbol}) || throw(
             ArgumentError(
@@ -282,6 +312,51 @@ function _validate_specs(components::NamedTuple, shares::Tuple, connects::Tuple)
             throw(ArgumentError("connect target :$(cn.dst) has no parameter slot :$(cn.dst_slot)"))
     end
     _check_connect_op_conflicts(connects)
+    _check_monitor_source_receivers(components, connects)
+    return nothing
+end
+
+# Resolve a connect source name against the source component's observables: states first, then
+# monitors. Returns `(:state, local_state_index)` or `(:monitor, local_monitor_index)`.
+# Membership is tested on the name tuples (not `state_index`, which some models implement by
+# throwing on an unknown name — see the `nothing` convention in `src/interface.jl`).
+function _resolve_source(model, comp::Symbol, name::Symbol)
+    is_state = name in state_names(model)
+    mi = findfirst(==(name), monitor_names(model))
+    is_state && mi !== nothing && throw(
+        ArgumentError(
+            "component :$comp declares :$name as both a state and a monitor, so a connect " *
+                "source naming it is ambiguous; rename one of them"
+        ),
+    )
+    is_state && return (:state, state_index(model, name))
+    mi !== nothing && return (:monitor, mi)
+    return throw(
+        ArgumentError(
+            "component :$comp has no state or monitor :$name (states $(state_names(model)), " *
+                "monitors $(monitor_names(model)))"
+        ),
+    )
+end
+
+# A monitor-sourcing component's monitors are computed in one pre-pass, before the component walk
+# stages any connect input. If such a component also *received* an edge, a monitor of its that
+# read the staged slot would see the previous evaluation's value — a silent one-eval lag. The
+# overlap is rejected rather than lag-checked, since "does this monitor read that slot" is not
+# statically knowable.
+function _check_monitor_source_receivers(components::NamedTuple, connects::Tuple)
+    dsts = map(cn -> cn.dst, connects)
+    for cn in connects
+        _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
+        cn.src in dsts && throw(
+            ArgumentError(
+                "component :$(cn.src) sources the monitor :$(cn.src_state) and also receives a " *
+                    "connect edge; monitors are computed before any parameter is staged, so a " *
+                    "monitor reading a staged slot would lag by one evaluation. Source the " *
+                    "monitor from a component that receives no edges, or split the model."
+            ),
+        )
+    end
     return nothing
 end
 
@@ -314,9 +389,14 @@ _check_component(comp_keys, c::Symbol) =
     c in comp_keys || throw(ArgumentError("unknown component :$c (have $(comp_keys))"))
 
 function _check_state(model, comp::Symbol, s::Symbol)
-    s in state_names(model) ||
-        throw(ArgumentError("component :$comp has no state :$s"))
-    return nothing
+    s in state_names(model) && return nothing
+    s in monitor_names(model) && throw(
+        ArgumentError(
+            "component :$comp declares :$s as a monitor, not a state; `share` merges states and " *
+                "a monitor has no derivative to own. Use `connect` to read a derived value."
+        ),
+    )
+    return throw(ArgumentError("component :$comp has no state :$s"))
 end
 
 # --- share equivalence classes ---
@@ -508,18 +588,34 @@ end
 One component's pre-resolved execution entry in a [`CoupledModel`](@ref)'s monolithic plan.
 `block` is the component's slice of the global state (a `UnitRange` when contiguous, else an
 index vector); `frozen` are local indices of shared states it does not own (zeroed after its
-functor, so the owner's write wins); `overwrites`/`adds` are connect edges resolved to
-`(src_global_index, dst_param_index)`; `params` is the receiver's `writable_parameters` vector
-(a private deepcopy made by `couple`, so staging never mutates the caller's model), or `nothing`
-when it has no incoming connect edges.
+functor, so the owner's write wins); `overwrites`/`adds` are state-sourced connect edges resolved
+to `(src_global_index, dst_param_index)`, and `monitor_overwrites`/`monitor_adds` the
+monitor-sourced ones resolved to `(monitor_scratch_index, dst_param_index)`; `params` is the
+receiver's `writable_parameters` vector (a private deepcopy made by `couple`, so staging never
+mutates the caller's model), or `nothing` when it has no incoming connect edges.
 """
-struct CompEntry{M, B, P, F, OW, AD}
+struct CompEntry{M, B, P, F, OW, AD, MOW, MAD}
     model::M
     block::B
     params::P
     frozen::F
     overwrites::OW
     adds::AD
+    monitor_overwrites::MOW
+    monitor_adds::MAD
+end
+
+"""
+    MonEntry
+
+One monitor-sourcing component's entry in a [`CoupledModel`](@ref)'s monitor pre-pass. `block` is
+the component's slice of the global state (as in [`CompEntry`](@ref)) and `range` its slice of
+the coupling's flat monitor scratch vector.
+"""
+struct MonEntry{M, B}
+    model::M
+    block::B
+    range::UnitRange{Int}
 end
 
 # Identity in base — zero overhead on the Float64 / explicit-solver path. `ext/ForwardDiffExt.jl`
@@ -530,57 +626,124 @@ _connect_value(x) = x
 
 # Build a concretely-typed tuple of entries in operator order (recursion keeps element types
 # concrete → the functor specializes and stays allocation-free on the contiguous-block case).
-_build_plan(components, parent, classes, connects, layout) =
-    _entries(components, parent, classes, connects, layout, layout.operator_order, 1)
+_build_plan(components, parent, classes, connects, layout, mon_offsets) =
+    _entries(components, parent, classes, connects, layout, mon_offsets, layout.operator_order, 1)
 
-_entries(components, parent, classes, connects, layout, order, i) =
+_entries(components, parent, classes, connects, layout, mon_offsets, order, i) =
     i > length(order) ? () :
     (
-        _entry(components, parent, classes, connects, layout, order[i]),
-        _entries(components, parent, classes, connects, layout, order, i + 1)...,
+        _entry(components, parent, classes, connects, layout, mon_offsets, order[i]),
+        _entries(components, parent, classes, connects, layout, mon_offsets, order, i + 1)...,
     )
 
-function _entry(components, parent, classes, connects, layout, ck)
+# The component's slice of the global state: a UnitRange when contiguous (fast view), else the
+# index vector. The Union is build-time only — the concrete type is captured by the entry's `B`
+# type parameter, so the functor stays specialized.
+_block(idxs) = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
+
+function _entry(components, parent, classes, connects, layout, mon_offsets, ck)
     si = layout.solution_indices
-    idxs = si[ck]
-    # UnitRange when contiguous (fast view), else the index vector. The Union here is build-time
-    # only — the concrete type is captured by `CompEntry`'s `B`, so the functor stays specialized.
-    block = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
     frozen = _frozen_indices(components, parent, classes, ck)
-    ow_l, ad_l = _connect_plan(components, connects, ck)
-    toglobal(e) = (si[e[1]][e[2]], e[3])   # (src_sym, src_local, dst_param) -> (src_global, dst_param)
+    ow_l, ad_l, mow_l, mad_l = _connect_plan(components, connects, ck)
+    toglobal(e) = (si[e[1]][e[2]], e[3])        # (src, src_local, dst_param) -> (src_global, dst_param)
+    tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3])   # -> (monitor_scratch_index, dst_param)
     overwrites = map(toglobal, ow_l) |> Tuple
     adds = map(toglobal, ad_l) |> Tuple
-    params = (isempty(ow_l) && isempty(ad_l)) ? nothing : writable_parameters(components[ck])
-    return CompEntry(components[ck], block, params, frozen, overwrites, adds)
+    monitor_overwrites = map(tomonitor, mow_l) |> Tuple
+    monitor_adds = map(tomonitor, mad_l) |> Tuple
+    has_edges = !(isempty(ow_l) && isempty(ad_l) && isempty(mow_l) && isempty(mad_l))
+    params = has_edges ? writable_parameters(components[ck]) : nothing
+    return CompEntry(
+        components[ck], _block(si[ck]), params, frozen,
+        overwrites, adds, monitor_overwrites, monitor_adds,
+    )
+end
+
+# Components sourcing at least one monitor, each with its slice of the coupling's flat monitor
+# scratch. Order follows first appearance in the edge list; `_entry` resolves monitor edges
+# against the same `offsets` map, so the two stay consistent. Empty when no edge sources a
+# monitor — then the pre-pass is a `Tuple{}` method and compiles away entirely.
+function _build_monitor_plan(components::NamedTuple, connects::Tuple, layout)
+    order = Symbol[]
+    for cn in connects
+        _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
+        cn.src in order || push!(order, cn.src)
+    end
+    offsets = Dict{Symbol, Int}()
+    total = 0
+    for ck in order
+        offsets[ck] = total
+        total += num_monitors(components[ck])
+    end
+    return _mon_entries(components, layout, order, offsets, 1), offsets, total
+end
+
+_mon_entries(components, layout, order, offsets, i) =
+    i > length(order) ? () :
+    (
+        _mon_entry(components, layout, offsets, order[i]),
+        _mon_entries(components, layout, order, offsets, i + 1)...,
+    )
+
+function _mon_entry(components, layout, offsets, ck)
+    off = offsets[ck]
+    return MonEntry(components[ck], _block(layout.solution_indices[ck]), (off + 1):(off + num_monitors(components[ck])))
 end
 
 # Evaluate the assembled RHS: walk the plan (fully unrolled), each component staging its connect
 # inputs, writing into its view of dU/U, then zeroing its non-owned shared-slot derivatives.
-_run!(dU, U, p, t, ::Tuple{}) = nothing
-function _run!(dU, U, p, t, plan)
+_run!(dU, U, p, t, ::Tuple{}, mon) = nothing
+function _run!(dU, U, p, t, plan, mon)
     e = first(plan)
-    _connect!(U, e.params, e.overwrites, e.adds)
+    _connect!(U, mon, e.params, e.overwrites, e.adds, e.monitor_overwrites, e.monitor_adds)
     e.model(view(dU, e.block), view(U, e.block), p, t)
     @inbounds for i in e.frozen
         dU[e.block[i]] = zero(eltype(dU))
     end
-    return _run!(dU, U, p, t, Base.tail(plan))
+    return _run!(dU, U, p, t, Base.tail(plan), mon)
 end
 
-# Stage connect inputs: read source states live from U into the receiver's parameter slots
-# (overwrite = copy, + = cross-sectional sum reset to zero then accumulated each eval).
-_connect!(U, ::Nothing, ::Tuple{}, ::Tuple{}) = nothing
-function _connect!(U, params, overwrites, adds)
+# Monitor pre-pass: fill the flat monitor scratch from each monitor-sourcing component's own
+# `monitor_values!`. Monitors are algebraic in (U, t) and U does not change during an evaluation,
+# so computing them once up front is exactly equivalent to recomputing per receiver, and cheaper.
+# The source's state slice is copied through `_connect_value` first, which is what keeps a derived
+# input frozen to its primal inside an implicit solver's Newton step (see ext/ForwardDiffExt.jl)
+# and what keeps the scratch a plain real vector under ForwardDiff.
+_monitors!(U, t, ::Tuple{}, mon, scratch) = nothing
+function _monitors!(U, t, mplan, mon, scratch)
+    e = first(mplan)
+    n = length(e.block)
+    @inbounds for i in 1:n
+        scratch[i] = _connect_value(U[e.block[i]])
+    end
+    monitor_values!(view(mon, e.range), view(scratch, 1:n), t, e.model)
+    return _monitors!(U, t, Base.tail(mplan), mon, scratch)
+end
+
+# Stage connect inputs into the receiver's parameter slots: state sources read live from U,
+# monitor sources read the pre-pass scratch (already primal). `overwrite` = copy, `+` = a
+# cross-sectional sum, reset to zero then accumulated each eval. Both source kinds resolve to
+# homogeneous `(index, dst_param)` lists, so every loop below is a single concrete code path.
+_connect!(U, mon, ::Nothing, ::Tuple{}, ::Tuple{}, ::Tuple{}, ::Tuple{}) = nothing
+function _connect!(U, mon, params, overwrites, adds, monitor_overwrites, monitor_adds)
     @inbounds begin
         for (_, d) in adds
+            params[d] = zero(eltype(params))
+        end
+        for (_, d) in monitor_adds
             params[d] = zero(eltype(params))
         end
         for (s, d) in overwrites
             params[d] = _connect_value(U[s])
         end
+        for (s, d) in monitor_overwrites
+            params[d] = mon[s]
+        end
         for (s, d) in adds
             params[d] += _connect_value(U[s])
+        end
+        for (s, d) in monitor_adds
+            params[d] += mon[s]
         end
     end
     return nothing
@@ -630,9 +793,14 @@ function monitor_values!(mon, U, t, cm::CoupledModel)
     return nothing
 end
 
-# Monolithic single-RHS: evaluate every component into the shared dU/U in operator order. This
-# is the default solve path — `ODEProblem(cm, tspan)` + `solve` (see ext/SciMLBaseExt.jl).
-(cm::CoupledModel)(dU, U, p, t) = (_run!(dU, U, p, t, cm.plan); nothing)
+# Monolithic single-RHS: resolve every monitor-sourced connect input, then evaluate every
+# component into the shared dU/U in operator order. This is the default solve path —
+# `ODEProblem(cm, tspan)` + `solve` (see ext/SciMLBaseExt.jl).
+function (cm::CoupledModel)(dU, U, p, t)
+    _monitors!(U, t, cm.monitor_plan, cm.monitor_scratch, cm.source_scratch)
+    _run!(dU, U, p, t, cm.plan, cm.monitor_scratch)
+    return nothing
+end
 
 # `num_parameters` and `parameter_names` are deliberately left UNDEFINED for `CoupledModel`: a
 # composite has no single flat parameter vector (parameters live on each component). Defining a
@@ -659,20 +827,25 @@ function _frozen_indices(components::NamedTuple, parent, classes, ck::Symbol)
     return Tuple(frozen)
 end
 
-# Resolve the connect edges targeting `ck` into (overwrites, adds), each a vector of
-# (src::Symbol, src_local::Int, dst_param::Int) tuples partitioned by op. The source is named as
-# (component, local state index); `_entry` maps it to a global-state index via `solution_indices`
-# when building the plan. Partitioning by op keeps the per-eval write homogeneous (no dispatch).
+# Resolve the connect edges targeting `ck` into four vectors of
+# (src::Symbol, src_local::Int, dst_param::Int) tuples, partitioned by source kind and then by op.
+# The source is named as (component, local index); `_entry` maps a state local index to a
+# global-state index via `solution_indices` and a monitor local index to a monitor-scratch index
+# via the offsets map. Partitioning up front keeps every per-eval write homogeneous (no dispatch).
 function _connect_plan(components::NamedTuple, connects::Tuple, ck::Symbol)
     overwrites = Tuple{Symbol, Int, Int}[]
     adds = Tuple{Symbol, Int, Int}[]
+    monitor_overwrites = Tuple{Symbol, Int, Int}[]
+    monitor_adds = Tuple{Symbol, Int, Int}[]
     for cn in connects
         cn.dst === ck || continue
-        entry = (
-            cn.src, state_index(components[cn.src], cn.src_state),
-            parameter_index(components[ck], cn.dst_slot),
-        )
-        cn.op === (+) ? push!(adds, entry) : push!(overwrites, entry)
+        kind, local_index = _resolve_source(components[cn.src], cn.src, cn.src_state)
+        entry = (cn.src, local_index, parameter_index(components[ck], cn.dst_slot))
+        if kind === :monitor
+            cn.op === (+) ? push!(monitor_adds, entry) : push!(monitor_overwrites, entry)
+        else
+            cn.op === (+) ? push!(adds, entry) : push!(overwrites, entry)
+        end
     end
-    return overwrites, adds
+    return overwrites, adds, monitor_overwrites, monitor_adds
 end

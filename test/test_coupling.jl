@@ -93,6 +93,64 @@ function (::_MonoR)(du, u, p, t)
     return nothing
 end
 
+# Monitor-source toy: owns a conserved pool a + b = _MONO_C but integrates only `a`, surfacing
+# the complement `b` as a DERIVED monitor. This is the shape a real monitor source has (Gauthier's
+# ADPi = C_A - ATPi). The second monitor `ag` depends on TWO states, which no per-edge scalar
+# transform could express. `monitor_calls` counts evaluations so the pre-pass can be shown to run
+# once per eval rather than once per receiving edge.
+const _MONO_C = 8.0
+mutable struct _MonoDerived <: CytoZoo.AbstractCardiacCellModel
+    monitor_calls::Int
+end
+_MonoDerived() = _MonoDerived(0)
+CytoZoo.num_states(::_MonoDerived) = 2
+CytoZoo.state_names(::_MonoDerived) = (:a, :g)
+CytoZoo.default_initial_state(::_MonoDerived) = [3.0, 1.0]
+CytoZoo.state_index(::_MonoDerived, n::Symbol) = findfirst(==(n), (:a, :g))
+CytoZoo.transmembrane_potential_index(::_MonoDerived) = 1
+CytoZoo.num_monitors(::_MonoDerived) = 2
+CytoZoo.monitor_names(::_MonoDerived) = (:b, :ag)
+function CytoZoo.monitor_values!(mon, u, t, m::_MonoDerived)
+    m.monitor_calls += 1
+    mon[1] = _MONO_C - u[1]            # conserved-pool complement
+    mon[2] = u[1] + u[2]               # depends on two states
+    return nothing
+end
+function (::_MonoDerived)(du, u, p, t)
+    du[1] = -u[1]                      # a(t) = 3exp(-t)
+    du[2] = 0.0
+    return nothing
+end
+
+# Declares :s as BOTH a state and a monitor, so a connect source naming it is ambiguous.
+struct _AmbiguousName <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_AmbiguousName) = 1
+CytoZoo.state_names(::_AmbiguousName) = (:s,)
+CytoZoo.default_initial_state(::_AmbiguousName) = [1.0]
+CytoZoo.state_index(::_AmbiguousName, n::Symbol) = findfirst(==(n), (:s,))
+CytoZoo.transmembrane_potential_index(::_AmbiguousName) = 1
+CytoZoo.num_monitors(::_AmbiguousName) = 1
+CytoZoo.monitor_names(::_AmbiguousName) = (:s,)
+CytoZoo.monitor_values!(mon, u, t, ::_AmbiguousName) = (mon[1] = 0.0; nothing)
+(::_AmbiguousName)(du, u, p, t) = (du[1] = 0.0; nothing)
+
+# Sources a monitor AND exposes a receiver slot whose staged value its monitor reads — the
+# one-eval lag hazard `couple` rejects, since the pre-pass runs before any staging.
+struct _DerivedReceiver <: CytoZoo.AbstractCardiacCellModel
+    parameters::Vector{Float64}
+end
+_DerivedReceiver() = _DerivedReceiver([0.0])
+CytoZoo.num_states(::_DerivedReceiver) = 1
+CytoZoo.state_names(::_DerivedReceiver) = (:a,)
+CytoZoo.default_initial_state(::_DerivedReceiver) = [1.0]
+CytoZoo.state_index(::_DerivedReceiver, n::Symbol) = findfirst(==(n), (:a,))
+CytoZoo.transmembrane_potential_index(::_DerivedReceiver) = 1
+CytoZoo.parameter_index(::_DerivedReceiver, n::Symbol) = n === :in ? 1 : nothing
+CytoZoo.num_monitors(::_DerivedReceiver) = 1
+CytoZoo.monitor_names(::_DerivedReceiver) = (:b,)
+CytoZoo.monitor_values!(mon, u, t, m::_DerivedReceiver) = (mon[1] = m.parameters[1] - u[1]; nothing)
+(m::_DerivedReceiver)(du, u, p, t) = (du[1] = m.parameters[1]; nothing)
+
 # Reports more state names than its initial-state vector has entries — `couple` must reject
 # this at construction rather than emitting a BoundsError from inside the layout loop.
 struct _BadLength <: CytoZoo.AbstractCardiacCellModel end
@@ -378,6 +436,116 @@ end
         [Subsystem(_CplMockA(); name = :A), Subsystem(_CplMockP(); name = :P)],
         [connect(:A => :b, :P => :in), connect(:A => :c, :P => :in; op = +)],
     )
+end
+
+# A connect source may name a STATE or a MONITOR. A monitor source lets a quantity an algebraic
+# law determines (a conserved pool's complement) be wired without promoting it to an integrated
+# state — the law stays inside the model that owns it.
+@testset "couple — monitor-sourced connect edges" begin
+    src = _MonoDerived()
+    cm = couple(
+        [Subsystem(src; name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:D => :b, :R => :d_ext)],
+    )
+    @test num_states(cm) == 3
+    @test state_names(cm) == (:a, :g, :R_acc)      # the monitor did NOT become a state
+    @test state_index(cm, :b) === nothing
+
+    U = default_initial_state(cm)                   # [a=3, g=1, acc=0]
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test dU[state_index(cm, :R_acc)] == _MONO_C - 3.0     # acc' = b = C - a
+    @test dU[state_index(cm, :a)] == -3.0                  # source's own equations untouched
+
+    # Recomputed live from U each eval, exactly like a state source.
+    U2 = copy(U)
+    U2[state_index(cm, :a)] = 5.0
+    cm(dU, U2, nothing, 0.0)
+    @test dU[state_index(cm, :R_acc)] == _MONO_C - 5.0
+
+    cm(dU, U, nothing, 0.0)                                # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0        # pre-pass + scratch stay allocation-free
+
+    # A monitor over several states — the case no per-edge scalar transform could express.
+    cm_multi = couple(
+        [Subsystem(_MonoDerived(); name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:D => :ag, :R => :d_ext)],
+    )
+    Um = default_initial_state(cm_multi)
+    dUm = similar(Um)
+    cm_multi(dUm, Um, nothing, 0.0)
+    @test dUm[state_index(cm_multi, :R_acc)] == 3.0 + 1.0
+
+    # State and monitor sources sum into one slot, and the sum stays cross-sectional (the slot is
+    # reset each eval) — the same invariant the all-state `+` path holds.
+    cm_sum = couple(
+        [Subsystem(_MonoDerived(); name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:D => :a, :R => :d_ext; op = +), connect(:D => :b, :R => :d_ext; op = +)],
+    )
+    Us = default_initial_state(cm_sum)
+    dUs = similar(Us)
+    cm_sum(dUs, Us, nothing, 0.0)
+    @test dUs[state_index(cm_sum, :R_acc)] == 3.0 + (_MONO_C - 3.0)
+    cm_sum(dUs, Us, nothing, 0.0)
+    cm_sum(dUs, Us, nothing, 0.0)
+    @test dUs[state_index(cm_sum, :R_acc)] == 3.0 + (_MONO_C - 3.0)
+    @test (@allocated cm_sum(dUs, Us, nothing, 0.0)) == 0
+
+    # The pre-pass evaluates each source ONCE per eval, not once per receiving edge.
+    counted = _MonoDerived()
+    cm_two = couple(
+        [
+            Subsystem(counted; name = :D),
+            Subsystem(_MonoReader(); name = :R1),
+            Subsystem(_MonoReader(); name = :R2),
+        ],
+        [connect(:D => :b, :R1 => :d_ext), connect(:D => :ag, :R2 => :d_ext)],
+    )
+    Ut = default_initial_state(cm_two)
+    dUt = similar(Ut)
+    counted.monitor_calls = 0
+    cm_two(dUt, Ut, nothing, 0.0)
+    @test counted.monitor_calls == 1
+    @test dUt[state_index(cm_two, :R1_acc)] == _MONO_C - 3.0
+    @test dUt[state_index(cm_two, :R2_acc)] == 3.0 + 1.0
+
+    # A coupling with no monitor source carries no pre-pass at all, so the existing path is
+    # untouched (the empty-tuple method compiles away).
+    plain = couple(
+        [Subsystem(_MonoA(); name = :A), Subsystem(_MonoReader(); name = :R)],
+        [connect(:A => :d, :R => :d_ext)],
+    )
+    @test plain.monitor_plan === ()
+    @test isempty(plain.monitor_scratch)
+end
+
+@testset "couple — monitor-source validation" begin
+    # Unknown name: neither a state nor a monitor.
+    @test_throws ArgumentError couple(
+        [Subsystem(_MonoDerived(); name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:D => :nope, :R => :d_ext)],
+    )
+    # A monitor has no derivative to own, so it cannot be a `share` endpoint.
+    @test_throws ArgumentError couple(
+        [Subsystem(_MonoDerived(); name = :D), Subsystem(_MonoQ(); name = :Q)],
+        [share(:D => :b, :Q => :w; owner = :D)],
+    )
+    # A name declared as both a state and a monitor is ambiguous as a connect source.
+    @test_throws ArgumentError couple(
+        [Subsystem(_AmbiguousName(); name = :X), Subsystem(_MonoReader(); name = :R)],
+        [connect(:X => :s, :R => :d_ext)],
+    )
+    # A monitor source that also receives an edge would compute its monitors from last eval's
+    # staged parameters — rejected rather than silently lagged.
+    @test_throws ArgumentError couple(
+        [Subsystem(_DerivedReceiver(); name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:D => :b, :R => :d_ext), connect(:R => :acc, :D => :in)],
+    )
+    # ...but receiving an edge is fine when the component sources no monitor.
+    @test couple(
+        [Subsystem(_DerivedReceiver(); name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:R => :acc, :D => :in)],
+    ) isa CytoZoo.CoupledModel
 end
 
 @testset "couple — self-share rejected" begin

@@ -49,6 +49,27 @@ end
         @test isapprox(sol.u[end][acc_idx], analytic; atol = 1.0e-6)
     end
 
+    @testset "monitor-sourced connect solves, explicit and implicit" begin
+        # acc' = b = C - a with a(t) = 3exp(-t)  =>  acc(2) = 2C - 3(1 - exp(-2)).
+        cm_m = couple(
+            [Subsystem(_MonoDerived(); name = :D), Subsystem(_MonoReader(); name = :R)],
+            [connect(:D => :b, :R => :d_ext)],
+        )
+        idx = state_index(cm_m, :R_acc)
+        exact = 2 * _MONO_C - 3 * (1 - exp(-2.0))
+
+        sol = solve(ODEProblem(cm_m, (0.0, 2.0)), Tsit5(); dt = 0.01, adaptive = false)
+        @test sol.retcode == ReturnCode.Success
+        @test isapprox(sol.u[end][idx], exact; atol = 1.0e-6)
+
+        # Under Rodas5P the state slice reaching monitor_values! holds Duals; the pre-pass must
+        # extract primals before computing, so neither the scratch nor the receiver's Float64
+        # parameter slot ever sees one.
+        sol_i = solve(ODEProblem(cm_m, (0.0, 2.0)), Rodas5P(); reltol = 1.0e-8, abstol = 1.0e-10)
+        @test sol_i.retcode == ReturnCode.Success
+        @test isapprox(sol_i.u[end][idx], exact; atol = 1.0e-6)
+    end
+
     @testset "stiff share coupling is stable (implicit)" begin
         cm_s = couple(
             [Subsystem(_MonoP(); name = :P), Subsystem(_MonoQ(); name = :Q)],

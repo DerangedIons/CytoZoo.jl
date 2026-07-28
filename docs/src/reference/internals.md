@@ -77,24 +77,42 @@ inlines. Each entry carries:
 - its `solution_indices` view into the global vectors,
 - its **frozen indices** — the local positions whose derivative must be zeroed because the
   component is a non-owner of that shared slot,
-- its **connect plan**, partitioned into homogeneous overwrite and add lists.
+- its **connect plan**, partitioned into homogeneous overwrite and add lists, once for
+  state-sourced edges and again for monitor-sourced ones.
 
-Partitioning the connects by operation at construction is what keeps the staging write free of
-dynamic dispatch: each list is processed by one concrete code path.
+Partitioning the connects by source kind and operation at construction is what keeps the staging
+write free of dynamic dispatch: each list is a homogeneous tuple of `(index, dst_param)` pairs
+processed by one concrete code path. State indices point into `U`, monitor indices into the
+coupling's flat monitor scratch.
+
+Alongside the plan, `couple` builds a **monitor pre-pass**: one entry per component that sources
+at least one monitor, carrying that component's state block and its slice of the scratch. A
+coupling with no monitor sources gets an empty tuple, so the pre-pass resolves to a
+`Tuple{}` method and vanishes.
 
 ## Evaluating the Coupled Right-Hand Side
 
-On each call to `(cm)(dU, U, p, t)`, for every component in `operator_order`:
+Each call to `(cm)(dU, U, p, t)` first runs the **monitor pre-pass**: for every monitor-sourcing
+component, its state slice is copied out of `U` and its `monitor_values!` fills that component's
+slice of the scratch. Monitors are algebraic in `(U, t)` and `U` does not change during an
+evaluation, so computing them once up front is exactly equivalent to recomputing them at each
+receiver, and cheaper when several receivers read the same source.
 
-1. **Stage connect inputs.** Source values are read **live from `U`** and written into the
-   receiver's parameter slots — overwrites first, then additive edges, whose target slots are
-   reset to zero before summing. Because the read is from `U` rather than a cached buffer, the
-   receiver always sees the current value.
+Then, for every component in `operator_order`:
+
+1. **Stage connect inputs.** State sources are read **live from `U`**, monitor sources from the
+   pre-pass scratch, and written into the receiver's parameter slots — overwrites first, then
+   additive edges, whose target slots are reset to zero before summing. Because the read is from
+   `U` rather than a cached buffer, the receiver always sees the current value.
 2. **Run the component**, with each submodel writing into a `view` of the shared `dU` and
    reading a `view` of the shared `U`. A submodel therefore needs no awareness that it is
    coupled — it sees ordinary contiguous state and derivative vectors.
 3. **Zero the frozen entries** of `dU`, discarding the non-owner's contribution to any shared
    slot.
+
+The pre-pass running before all staging is why a monitor source may not also *receive* a connect
+edge: its monitors would be computed from parameters staged on the previous evaluation. `couple`
+rejects that overlap.
 
 `operator_order` places the **owner last** for every shared slot, so the owner's write is the
 final one and therefore the one that survives.
@@ -105,8 +123,8 @@ monolithic architecture; see [Design Notes](design.md).
 
 ## The ForwardDiff Seam
 
-Connect staging passes each value through an internal `_connect_value` hook. In the base
-package it is the identity function.
+Connect staging passes each value through an internal `_connect_value` hook, as does the monitor
+pre-pass when it copies a source's state slice. In the base package it is the identity function.
 
 When ForwardDiff is loaded, the extension adds a method for `Dual` that extracts the primal
 and recurses, so nested duals from higher-order differentiation also collapse. Without it,

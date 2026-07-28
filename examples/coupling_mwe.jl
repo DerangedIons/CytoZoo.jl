@@ -12,7 +12,7 @@
 # Socket map (✅ = expressible today, ❌ = drives new API):
 #   1 u   feedforward WIRE (overwrite): D state → R param slot            ✅  connect(:D=>:u, :R=>:p_u)
 #   2 v   feedforward WIRE (overwrite)                                    ✅  connect(:D=>:v, :R=>:p_v)
-#   3 b   DERIVED-source WIRE: D derived → Redox param slot               ❌  connect sources a STATE only
+#   3 b   DERIVED-source WIRE: D derived → Redox param slot               ✅  connect(:D=>:b, :Redox=>:p_b)
 #   4 a/e adopt-native / drop receiver state (owner wins)                 ✅  share(:D=>:a, :R=>:e; owner=:D)
 #   5 w   feedback additive contributed-flux into a shared derivative     ❌  share=hard-discard; connect writes a param
 #   6 redox    module on/off = compose with/without the ToyRedox subsystem  ✅  include/omit Subsystem(ToyRedox)
@@ -241,6 +241,41 @@ let stim = ToyDriver().stim, tspan = (0.0, 5.0), opts = (dt = 0.01, adaptive = f
             round(dY[end]; digits = 4))
 end
 
+# --- socket 3 — DERIVED-source WIRE (D's monitor b = Ca − a drives Redox's p_b slot) ---------
+println("── socket 3 — DERIVED-source WIRE (monitor → param slot) ──")
+let tspan = (0.0, 5.0), opts = (dt = 0.01, adaptive = false)
+    D = ToyDriver()
+    cm = couple(
+        (Subsystem(D; name = :D), Subsystem(ToyRedox(); name = :Redox)),
+        (connect(:D => :b, :Redox => :p_b),),
+    )
+    # `b` is DERIVED, not integrated: wiring it adds no state, and the conservation law a + b = Ca
+    # stays inside ToyDriver rather than being restated at the edge.
+    @assert state_index(cm, :b) === nothing "the monitor b leaked into the global state"
+    @assert num_states(cm) == 5 "expected D's 4 states + Redox's z, got $(num_states(cm))"
+
+    # Structural: Redox's dz reads b = Ca − a live, not its standalone p_b default of 0.
+    U = default_initial_state(cm)
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    Ca = D.parameters[6]
+    b0 = Ca - U[state_index(cm, :a)]
+    shunt, kz = ToyRedox().parameters[3], ToyRedox().parameters[4]
+    dz_want = shunt * (0.0 + b0) - kz * U[state_index(cm, :Redox_z)]
+    @assert approx(dU[state_index(cm, :Redox_z)], dz_want) "socket 3: dz did not read the derived b"
+
+    # Behavioural + OFF-invariant: omit the edge and p_b holds its default, so z never moves.
+    off = couple((Subsystem(ToyDriver(); name = :D), Subsystem(ToyRedox(); name = :Redox)))
+    son = solve(ODEProblem(cm, tspan), Tsit5(); opts...)
+    soff = solve(ODEProblem(off, tspan), Tsit5(); opts...)
+    zon = son.u[end][state_index(cm, :Redox_z)]
+    zoff = soff.u[end][state_index(off, :Redox_z)]
+    @assert zon > 1.0e-3 "socket 3: wiring the derived b made no difference to z"
+    @assert approx(zoff, 0.0; atol = 1.0e-9) "socket 3 OFF-invariant broken: z moved without the edge"
+    println("  z driven by DERIVED b = Ca − a:  z(end) = ", round(zon; digits = 4),
+            ";  omit the edge ⇒ z(end) = ", zoff)
+end
+
 # --- socket 4 — share / adopt-native (owner D wins; R's own equation discarded) --------------
 println("── socket 4 — share (adopt-native / drop receiver state) ──")
 let tspan = (0.0, 8.0)
@@ -346,14 +381,5 @@ end
 #
 #   Needed in CytoZoo: an accumulate-into-owner's-dU path in `_run!` (src/coupling.jl), a
 #   contributory alternative to today's `frozen`-index zeroing.
-#
-# ── socket 3 — DERIVED-source WIRE ───────────────────────────────────────────────────────────
-#   Wire D's DERIVED b (= Ca − a) into the redox module's p_b slot so it reads it live:
-#
-#       connect(:D => :b, :Redox => :p_b)
-#
-#   `connect` resolves its source only through `state_index` (src/coupling.jl), so a monitor /
-#   derived name fails today. Needed: fall back to a monitor index (compute the derived value each
-#   RHS) when the source name is not a state.
 
 println("\nAll live demonstrations passed. See the TARGET API section for the API backlog.")

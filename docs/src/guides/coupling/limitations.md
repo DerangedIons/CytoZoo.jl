@@ -40,9 +40,9 @@ derivative taken *through* a connect edge loses that coupling term entirely. Con
 ## Thread Safety
 
 A `CoupledModel` stages `connect` inputs into a private copy of each receiver, held on the
-coupled model itself. That copy is mutable scratch, so **one `CoupledModel` cannot be solved
-concurrently from several threads** — the trajectories would scribble over each other's
-staged inputs.
+coupled model itself, and resolves any monitor sources into scratch vectors held the same way.
+That is all mutable scratch, so **one `CoupledModel` cannot be solved concurrently from several
+threads** — the trajectories would scribble over each other's staged inputs.
 
 `couple` deepcopies each receiver at construction, so building a coupling never mutates the
 model instances you passed in. The hazard is only in sharing one `CoupledModel` across
@@ -86,16 +86,26 @@ inject(:X => :J, :D => :w)                           # a new edge kind
     implementation, not a design invariant. It is expected to change when a consumer needs
     additive coupling, so avoid building anything that depends on it.
 
-## `connect` Sources Must Be States
+## Derived Sources Must Be Declared, and Cost the Whole Monitor Vector
 
-A `connect` source is resolved with [`state_index`](@ref), so it must name a real state. A
-derived quantity — one computed algebraically from state, such as `ADP = C_A - ATP` — cannot
-be a connect source, even though it is exactly the kind of thing one model wants to hand
-another.
+A `connect` source may name a state or a monitor, so a derived quantity such as
+`ADP = C_A - ATP` is wirable (see [Connect Edges](connect.md)). Three constraints come with it.
 
-The workaround is to promote the quantity to an actual state, which means integrating a
-variable that a conservation law already determines. Supporting derived sources would mean
-resolving a monitor value on each evaluation.
+**The source model must declare the observable.** A derived quantity that no model exposes
+through [`monitor_names`](@ref) cannot be wired. For a model you own this is a one-line
+addition; for a third-party model it means wrapping it in an adapter, the same pattern
+`ext/ThunderboltExt.jl` uses.
+
+**Wiring one monitor computes them all.** [`monitor_values!`](@ref) fills a model's entire
+monitor vector, once per evaluation per sourcing component. A model with a handful of monitors
+costs nothing measurable; a model with hundreds pays for all of them to deliver one. Splitting
+that into per-monitor access is a possible future addition, not a current property.
+
+**A monitor source cannot also receive a `connect` edge.** The monitor pre-pass runs before the
+component walk stages any parameter, so a monitor that read a staged slot would see the
+*previous* evaluation's value. Since "does this monitor read that slot" is not knowable
+statically, `couple()` rejects the overlap outright rather than risk a silent one-evaluation
+lag. Source the monitor from a component that receives no edges, or split the model.
 
 ## Other Constraints
 
@@ -121,7 +131,8 @@ model has been run or tested on a device.
 | Newton convergence with tight stiff `connect` | performance | `connect` only |
 | One `CoupledModel` is not thread-safe | crash / corruption | `connect` receivers |
 | Shared-state contributions cannot sum | expressiveness | `share` |
-| `connect` sources must be states | expressiveness | `connect` |
+| A derived source costs its model's whole monitor vector | performance | `connect` |
+| A monitor source cannot also receive an edge | expressiveness | `connect` |
 | No DAE coupling | scope | all |
 
 ## See Also
