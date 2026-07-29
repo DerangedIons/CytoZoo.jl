@@ -84,11 +84,15 @@ path — no consumer justified maintaining a second, strictly less accurate solv
 
 ## Still-open questions carried forward from the original design
 
-- **Additive / contributory share.** The current `share` is hard-discard: one owner governs, and
-  two models cannot each contribute a term to the same shared derivative. This is Modelica's
-  *through* (flow) variable, where contributions sum, as opposed to the *across* variable that
-  `share` implements. Deferred until the ECCMitoRedox port needs it; see socket 5 in
-  `examples/coupling_mwe.md`.
+- **Flux injection as a distinct edge kind.** Additive contribution itself is now shipped as
+  `share(…; op = +)` — Modelica's *through* (flow) variable, where contributions sum, alongside
+  the *across* variable that hard-discard `share` implements; see socket 5 in
+  `examples/coupling_mwe.md`. What remains deferred is the alternative spelling
+  `inject(:X => :J, :D => :w)`, sourcing a named DERIVED flux. A monitor source is resolved in a
+  pre-pass, so it may not also receive a `connect` edge — which the ECCMitoRedox redox block does,
+  to read its driver's observables — and its value passes through `_connect_value`, which extracts
+  the primal of a `Dual` and would strip the contribution out of every derivative. Revisit only
+  for a module that cannot carry its contribution as a state.
 - **GPU compatibility.** Not precluded — the design keeps structs isbits-friendly — but not
   shipped or tested.
 - **Non-ODE components.** DAE / algebraic-constraint coupling remains out of scope.

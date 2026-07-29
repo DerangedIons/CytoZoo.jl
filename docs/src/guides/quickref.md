@@ -80,6 +80,7 @@ SpatialGradient(dim, x_start, x_end, val_start, val_end)
 Subsystem(model; name = :A)                      # a graph node
 
 share(:A => :d, :B => :x; owner = :A)            # one variable, owner's equation wins
+share(:A => :d, :B => :x; owner = :A, op = +)    # ...or the other's derivative is ADDED to it
 share(:A => :d, :B => :x; owner = :A, name = :ATP)   # name the global slot
 
 connect(:A => :v, :B => :v_ext)                  # dataflow: state -> parameter slot

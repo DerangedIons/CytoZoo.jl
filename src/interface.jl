@@ -8,6 +8,12 @@ Every concrete model must implement:
 - [`transmembrane_potential_index`](@ref)
 - [`default_initial_state`](@ref)
 
+The RHS must **write** every entry of `du`, never accumulate into one it has not yet assigned:
+`du` arrives uninitialised, so `du[i] += ...` as a slot's first write reads whatever was there.
+Assign first, then modify. Under a contributory `share` (`op = +`) the coupling adds each
+component's write onto a running total, so violating this turns a garbage read into a silent
+double-count rather than an obvious `NaN`.
+
 A **composite** model (e.g. `CoupledModel`) merges its components' states into one
 global vector, so it implements the state-side methods above; but its parameters stay
 on the individual components rather than in a single flat vector. `num_parameters`

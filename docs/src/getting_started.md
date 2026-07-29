@@ -197,8 +197,8 @@ Worth knowing before you build on this:
   See [Derived Observables](guides/monitors.md).
 - **GPU execution is designed for but not tested.** The types are isbits-friendly and the
   arithmetic is element-type generic, but no GPU test suite exists.
-- **Two coupling patterns are not yet expressible** — additive contributed flux into a shared
-  derivative, and `connect` edges sourced from a derived quantity. See
+- **A contributory `share` discards the contributor's initial value**, and a component that
+  accumulates into its own `du` instead of writing it will double-count. See
   [Coupling Limitations](guides/coupling/limitations.md).
 - **Derivatives taken through a `connect` edge are wrong**, not merely approximate. If you
   plan to do sensitivity analysis or gradient-based fitting across a coupling, read

@@ -2,13 +2,13 @@
 
 `coupling_mwe.jl` is the canonical **driver for CytoZoo's coupling API**. It is a minimal working
 example: two tiny models (~8 states total) that between them exercise the *entire* coupling taxonomy
-from the ECCMitoRedox architecture — feedforward **and** feedback, including the patterns CytoZoo
-cannot express yet.
+from the ECCMitoRedox architecture — feedforward **and** feedback. Every socket in the map is now
+live.
 
 **Why a toy.** We were reverse-engineering the API from the real coupled model (Gauthier ECC, 76
 states + Kembro mito, 25 states). Only the *set of coupling patterns* drives API design; the real
 model's *scale* (more variables/parameters) adds nothing. The toy keeps the whole taxonomy in view
-at once and turns each missing capability into a one-line, executable spec.
+at once and turned each missing capability into a one-line, executable spec until it was built.
 
 ## The models
 
@@ -17,8 +17,9 @@ at once and turns each missing capability into a one-line, executable spec.
   feedback target `w`.
 - **Responder `R`** (`ToyResponder`, ≈ Kembro mito) — the core downstream model, states `y, m, e`,
   with WIRE receiver parameter slots `p_u, p_v` and a held-as-param `h`.
-- **`ToyRedox`** — an *optional* subsystem (state `z`, the redox module). Compose it in to switch
-  redox on; leave it out to switch off.
+- **`ToyRedox`** — an *optional* subsystem (states `z` and `w_flux`, the redox module). Compose it
+  in to switch redox on; leave it out to switch off. `w_flux` carries the term it contributes back
+  to `D`: its derivative is the flux `J = gJ·z`, summed into `D`'s `dw` by a contributory share.
 - **`ToyH`** — an *optional* subsystem (state `h`). Compose it in (with a `connect` edge) and `R`
   reads `h` as a live state; leave it out and `R` holds `h` as a fixed parameter.
 
@@ -27,7 +28,7 @@ construction-time switch, and nothing routes through `p`.
 
 ## Socket map
 
-Each row is a *role change* a coupling imposes. ✅ = expressible today; ❌ = drives new API.
+Each row is a *role change* a coupling imposes. ✅ = expressible today.
 
 | # | Socket | Coupling pattern | Toy expression | ECCMitoRedox analogue | CytoZoo |
 |---|--------|------------------|----------------|-----------------------|---------|
@@ -35,7 +36,7 @@ Each row is a *role change* a coupling imposes. ✅ = expressible today; ❌ = d
 | 2 | `v` | Feedforward WIRE (overwrite) | `connect(:D=>:v, :R=>:p_v)` | Nai → K.VNai | ✅ |
 | 3 | `b` | **DERIVED-source WIRE** — DERIVED → PARAM slot | `connect(:D=>:b, :Redox=>:p_b)` | ADPi = C_A − ATPi | ✅ (monitor source) |
 | 4 | `a`/`e` | **Adopt-native / drop receiver state** — owner wins, other discarded | `share(:D=>:a, :R=>:e; owner=:D)` | ATPi G-native | ✅ (hard-discard `share`) |
-| 5 | `w` | **Feedback additive contributed-flux** into a shared derivative | *want* Redox's `+J` summed into D's `dw` | NADH += −V_THD; ΔΨm += +V_IMAC | ❌ |
+| 5 | `w` | **Feedback additive contributed-flux** into a shared derivative | `share(:D=>:w, :Redox=>:w_flux; owner=:D, op=+)` | NADH += −V_THD; ΔΨm += +V_IMAC | ✅ (contributory `share`) |
 | 6 | redox | **Module on/off = compose with/without a subsystem** | include/omit `Subsystem(ToyRedox())` | redox_on / CII_dynamic | ✅ |
 | 7 | edges | **Edge on/off = compose with/without an edge** | include/omit the WIRE edges at `couple()` | cyto_ions_dynamic | ✅ |
 | 8 | `h` | **State↔param role flip = compose with/without a subsystem** | include/omit `Subsystem(ToyH())` + `connect` | Hm/Pim held as G params | ✅ |
@@ -51,6 +52,9 @@ There is no switch primitive and no construction-time switch kwarg.
   omit the `ToyRedox` subsystem ⇒ D and R recover their baseline (`z` is a leaf nothing reads).
 - **G2 — one-way.** One pulse into `u` lifts R's `y`, which peaks early and returns toward baseline
   (no drift).
+- **G3 — contribution.** Socket 5's `dw` is checked against a hand-rolled `Pw − Lw·w + J`, and the
+  *same graph* with the default `op` must give `Pw − Lw·w` — one keyword apart, so a leak in either
+  direction fails loudly.
 - **Closures.** `a + b = Ca` and `m + n = Cm` hold every step (asserted via `monitor_history`).
 
 Socket 3 needed **no change to the toy models at all**: `ToyDriver` already declared `b = Ca − a`
@@ -58,17 +62,22 @@ as a monitor for socket 9, and a `connect` source resolves against states *then*
 derived quantity and observing one are the same declaration — the conservation law stays inside the
 model that owns it instead of being restated at the edge.
 
-## API backlog (the ❌ row)
+Socket 5 needed **one new state on `ToyRedox`** and nothing else. A module contributes a term by
+carrying it as an ordinary state whose derivative is the flux; `op = +` decides that the shared slot
+sums rather than discards. Written standalone, `ToyRedox` is unaware it is coupled — the same
+authoring property hard-discard `share` has.
 
-The one concrete design question left for the toy to settle:
+## API backlog
 
-1. **Additive / contributory share** (socket 5) — *the central feedback gap.* Let a non-owner add a
-   flux into an owner's shared-slot derivative, vs. today's hard-discard. Candidate spellings:
-   `share(:D=>:w, :Redox=>:w_flux; owner=:D, op=+)`, or a new `inject(:Redox=>:J, :D=>:w)` edge.
-   Implementation: an accumulate-into-owner's-`dU` path in `_run!` (`src/coupling.jl`), a contributory
-   alternative to the `frozen`-index zeroing.
+Empty. Every socket is live.
 
-Design it against this toy, then apply the finalized API to ECCMitoRedox (downstream).
+What remains is an alternative *spelling* for socket 5, not a missing capability: a new
+`inject(:Redox => :J, :D => :w)` edge sourcing a named DERIVED flux. It was not built, for two
+reasons worth keeping. A monitor source is resolved in a pre-pass, so the sourcing component may not
+itself receive a `connect` edge — which the real consumer does, to read its driver's `V_O2`,
+`V_SDH`, `V_He_F`; and monitor values pass through `_connect_value`, which extracts the primal of a
+`Dual`, so an injected flux would silently vanish from every derivative. A share never leaves `U`
+and has neither problem. Revisit only for a module that genuinely cannot carry the term as a state.
 
 ## Run
 

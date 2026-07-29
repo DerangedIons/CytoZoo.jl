@@ -70,6 +70,29 @@ end
         @test isapprox(sol_i.u[end][idx], exact; atol = 1.0e-6)
     end
 
+    @testset "contributory share integrates to the analytic solution" begin
+        # A.p owns the slot with p' = -p; B.y contributes a constant 999 into it. Together
+        # p' = -p + 999 with p(0) = 2, so p(t) = 999 - 997exp(-t) — a closed form that is wrong
+        # under hard-discard (which would give 2exp(-t)) and wrong again if the contribution were
+        # accumulated across evaluations instead of reset each one.
+        cm_c = couple(
+            [Subsystem(_ScatterA(); name = :A), Subsystem(_ScatterB(); name = :B)],
+            [share(:A => :p, :B => :y; owner = :A, op = +)],
+        )
+        p_idx = state_index(cm_c, :p)
+        exact = 999 - 997 * exp(-2.0)
+
+        sol = solve(ODEProblem(cm_c, (0.0, 2.0)), Tsit5(); dt = 0.001, adaptive = false)
+        @test sol.retcode == ReturnCode.Success
+        @test isapprox(sol.u[end][p_idx], exact; rtol = 1.0e-6)
+
+        # Under an implicit solver the accumulate path carries Duals. Unlike a `connect` input,
+        # nothing extracts a primal, so the contributed term stays in the Jacobian.
+        sol_i = solve(ODEProblem(cm_c, (0.0, 2.0)), Rodas5P(); reltol = 1.0e-10, abstol = 1.0e-12)
+        @test sol_i.retcode == ReturnCode.Success
+        @test isapprox(sol_i.u[end][p_idx], exact; rtol = 1.0e-6)
+    end
+
     @testset "stiff share coupling is stable (implicit)" begin
         cm_s = couple(
             [Subsystem(_MonoP(); name = :P), Subsystem(_MonoQ(); name = :Q)],
