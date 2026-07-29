@@ -1,6 +1,8 @@
 # Coupling tests: layout, naming, sharing, owner semantics, validation, and the monolithic
 # single-RHS functor. Solver-driven coupling solves live in test_scimlbase_ext.jl.
 
+using ForwardDiff   # loads ext/ForwardDiffExt.jl — the additive-share Jacobian test needs it
+
 # Minimal mock components implementing the participant interface.
 struct _CplMockA <: CytoZoo.AbstractCellModel end
 CytoZoo.num_states(::_CplMockA) = 3
@@ -92,6 +94,58 @@ function (::_MonoR)(du, u, p, t)
     du[2] = 2 * u[1]                  # s — driven by the shared v
     return nothing
 end
+
+# Contributory-share toys (`op = +`). Each writes its whole `du` view like any component; the
+# difference is what the coupling does with the shared slot afterwards — added, not discarded. Two
+# of them so one slot can be shown to SUM several contributions.
+struct _MonoJ <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_MonoJ) = 2
+CytoZoo.state_names(::_MonoJ) = (:v, :j)
+CytoZoo.default_initial_state(::_MonoJ) = [10.0, 0.0]
+CytoZoo.state_index(::_MonoJ, n::Symbol) = findfirst(==(n), (:v, :j))
+CytoZoo.transmembrane_potential_index(::_MonoJ) = 1
+function (::_MonoJ)(du, u, p, t)
+    du[1] = 20.0                      # v — CONTRIBUTED into the shared slot
+    du[2] = u[1]                      # j — also reads the shared v
+    return nothing
+end
+
+struct _MonoJ2 <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_MonoJ2) = 1
+CytoZoo.state_names(::_MonoJ2) = (:v,)
+CytoZoo.default_initial_state(::_MonoJ2) = [10.0]
+CytoZoo.state_index(::_MonoJ2, n::Symbol) = findfirst(==(n), (:v,))
+CytoZoo.transmembrane_potential_index(::_MonoJ2) = 1
+(::_MonoJ2)(du, u, p, t) = (du[1] = 300.0; nothing)   # v — a second contribution into the same slot
+
+# A contribution that DEPENDS on the shared state. This is what distinguishes an additive share
+# from a `connect`: the term stays in the Jacobian instead of being frozen to its primal.
+struct _MonoJState <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_MonoJState) = 1
+CytoZoo.state_names(::_MonoJState) = (:v,)
+CytoZoo.default_initial_state(::_MonoJState) = [10.0]
+CytoZoo.state_index(::_MonoJState, n::Symbol) = findfirst(==(n), (:v,))
+CytoZoo.transmembrane_potential_index(::_MonoJState) = 1
+(::_MonoJState)(du, u, p, t) = (du[1] = -3.0 * u[1]; nothing)   # contributes -3v into the shared slot
+
+# Mutual-contribution toys: each owns one slot and contributes to the other's. Under hard-discard
+# this topology is a cyclic operator order; an accumulating class imposes no ordering, so it is
+# legal here.
+struct _MonoMutX <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_MonoMutX) = 2
+CytoZoo.state_names(::_MonoMutX) = (:f, :g)
+CytoZoo.default_initial_state(::_MonoMutX) = [0.0, 0.0]
+CytoZoo.state_index(::_MonoMutX, n::Symbol) = findfirst(==(n), (:f, :g))
+CytoZoo.transmembrane_potential_index(::_MonoMutX) = 1
+(::_MonoMutX)(du, u, p, t) = (du[1] = 1.0; du[2] = 3.0; nothing)
+
+struct _MonoMutY <: CytoZoo.AbstractCardiacCellModel end
+CytoZoo.num_states(::_MonoMutY) = 2
+CytoZoo.state_names(::_MonoMutY) = (:f, :g)
+CytoZoo.default_initial_state(::_MonoMutY) = [0.0, 0.0]
+CytoZoo.state_index(::_MonoMutY, n::Symbol) = findfirst(==(n), (:f, :g))
+CytoZoo.transmembrane_potential_index(::_MonoMutY) = 1
+(::_MonoMutY)(du, u, p, t) = (du[1] = 10.0; du[2] = 30.0; nothing)
 
 # Monitor-source toy: owns a conserved pool a + b = _MONO_C but integrates only `a`, surfacing
 # the complement `b` as a DERIVED monitor. This is the shape a real monitor source has (Gauthier's
@@ -411,6 +465,192 @@ end
 
     cm(dU, U, nothing, 0.0)                             # warm up
     @test (@allocated cm(dU, U, nothing, 0.0)) == 0     # scattered (Vector-indexed) view stays allocation-free
+end
+
+@testset "couple — contributory share (op = +)" begin
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoJ(); name = :J)]
+    cm = couple(nodes, [share(:P => :v, :J => :v; owner = :P, op = +)])
+
+    vslot = state_index(cm, :v)
+    @test num_states(cm) == 3                                    # a, v, J_j — still one shared slot
+    @test state_names(cm) == (:a, :v, :J_j)
+    @test cm.layout.solution_indices.J[1] == vslot                # the contributor aliases the slot
+    @test default_initial_state(cm)[vslot] == 10.0                # IC still comes from the OWNER
+
+    # The contributor is accumulated, never frozen; the plan carries the slot for the pre-walk reset.
+    entry = cm.plan[findfirst(e -> e.model isa _MonoJ, cm.plan)]
+    @test entry.frozen == ()
+    @test entry.accumulated == (1,)
+    @test cm.additive_slots == (vslot,)
+
+    # dU arrives dirty from the solver — the accumulate path must not inherit whatever was there.
+    U = default_initial_state(cm)
+    dU = similar(U)
+    fill!(dU, 1.0e6)
+    cm(dU, U, nothing, 0.0)
+    @test dU[vslot] == -_MONO_K * (10.0 - 1.0) + 20.0             # owner's equation PLUS the contribution
+    @test dU[state_index(cm, :J_j)] == 10.0                       # the contributor still reads the shared v
+
+    # Cross-sectional, NOT a running total: every accumulating slot is reset before the walk, so
+    # repeated evaluation gives the same answer. Without the reset this drifts by +20 each call.
+    cm(dU, U, nothing, 0.0)
+    cm(dU, U, nothing, 0.0)
+    @test dU[vslot] == -_MONO_K * (10.0 - 1.0) + 20.0
+
+    cm(dU, U, nothing, 0.0)                                       # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0               # save/restore stays allocation-free
+end
+
+@testset "couple — contributory share sums, and mixes with hard-discard" begin
+    # One class, three roles at once: P owns, Q is hard-discarded, J and J2 both contribute.
+    nodes = [
+        Subsystem(_MonoP(); name = :P), Subsystem(_MonoQ(); name = :Q),
+        Subsystem(_MonoJ(); name = :J), Subsystem(_MonoJ2(); name = :J2),
+    ]
+    edges = [
+        share(:P => :v, :Q => :v; owner = :P),                    # hard discard — 12345 dropped
+        share(:P => :v, :J => :v; owner = :P, op = +),            # +20
+        share(:P => :v, :J2 => :v; owner = :P, op = +),           # +300
+    ]
+    cm = couple(nodes, edges)
+    vslot = state_index(cm, :v)
+    want = -_MONO_K * (10.0 - 1.0) + 20.0 + 300.0
+
+    U = default_initial_state(cm)
+    dU = similar(U)
+    fill!(dU, -7.0)
+    cm(dU, U, nothing, 0.0)
+    @test dU[vslot] == want                                       # contributions sum; the poison is gone
+    @test dU[state_index(cm, :Q_w)] == 10.0                       # the frozen member still READS the slot
+
+    # An accumulating class is order-free, so every declaration order must give the same physics.
+    # This is the property that lets a mixed class exist at all: hard-discard wants the owner last,
+    # accumulation wants it first, and save/restore removes the question.
+    for perm in ([2, 1, 4, 3], [4, 3, 2, 1], [3, 4, 1, 2], [2, 4, 1, 3])
+        cmp_ = couple(nodes[perm], edges)
+        Up = default_initial_state(cmp_)
+        dUp = similar(Up)
+        fill!(dUp, 1.0e6)
+        cmp_(dUp, Up, nothing, 0.0)
+        @test dUp[state_index(cmp_, :v)] == want
+    end
+
+    cm(dU, U, nothing, 0.0)                                       # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0
+end
+
+@testset "couple — contributory share on a non-contiguous block" begin
+    # Same scattered topology as above (B.solution_indices == [3, 1]), but B now CONTRIBUTES its
+    # 999 instead of having it discarded. `block[i]` compiles differently for a Vector-indexed
+    # block than for a UnitRange, so the save/restore has to be allocation-free on both.
+    cm = couple(
+        [Subsystem(_ScatterA(); name = :A), Subsystem(_ScatterB(); name = :B)],
+        [share(:A => :p, :B => :y; owner = :A, op = +)],
+    )
+    @test cm.layout.solution_indices.B == [3, 1]
+    @test cm.additive_slots == (1,)
+
+    U = default_initial_state(cm)
+    dU = similar(U)
+    fill!(dU, 1.0e6)
+    cm(dU, U, nothing, 0.0)
+    @test dU[1] == -2.0 + 999.0                       # A.p's equation plus B.y's contribution
+    @test dU[2] == 2 * 3.0                            # A.q untouched
+    @test dU[3] == 5.0                                # B.x, written through the scattered view
+
+    cm(dU, U, nothing, 0.0)                           # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0
+end
+
+@testset "couple — contributory shares may be mutual" begin
+    # X owns f and contributes to g; Y owns g and contributes to f. Under hard-discard the two
+    # precedence edges (X before Y, Y before X) are a cycle; an accumulating class emits none.
+    cm = couple(
+        [Subsystem(_MonoMutX(); name = :X), Subsystem(_MonoMutY(); name = :Y)],
+        [share(:X => :f, :Y => :f; owner = :X, op = +),
+         share(:Y => :g, :X => :g; owner = :Y, op = +)],
+    )
+    U = default_initial_state(cm)
+    dU = similar(U)
+    fill!(dU, 1.0e6)
+    cm(dU, U, nothing, 0.0)
+    @test dU[state_index(cm, :f)] == 1.0 + 10.0       # X's equation + Y's contribution
+    @test dU[state_index(cm, :g)] == 30.0 + 3.0       # Y's equation + X's contribution
+
+    # The same pair under hard-discard is still, correctly, a cyclic operator order.
+    @test_throws ArgumentError couple(
+        [Subsystem(_MonoMutX(); name = :X), Subsystem(_MonoMutY(); name = :Y)],
+        [share(:X => :f, :Y => :f; owner = :X), share(:Y => :g, :X => :g; owner = :Y)],
+    )
+end
+
+@testset "couple — contributory share validation" begin
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoJ(); name = :J), Subsystem(_MonoJ2(); name = :J2)]
+
+    # R1 — an unsupported op is rejected where it is written, not at couple time.
+    @test_throws ArgumentError share(:P => :v, :J => :v; owner = :P, op = *)
+    @test share(:P => :v, :J => :v; owner = :P, op = +).op === (+)          # ...but `+` is fine
+    @test share(:P => :v, :J => :v; owner = :P).op === overwrite            # ...and `overwrite` is the default
+
+    # R3 — one endpoint cannot both contribute and be discarded.
+    @test_throws ArgumentError couple(
+        nodes,
+        [share(:P => :v, :J => :v; owner = :P, op = +), share(:P => :v, :J => :v; owner = :P)],
+    )
+
+    # R4 — one component may contribute at most one state to a class. Two of its states in one
+    # class collapse onto a single slot, which double-counts under `op = +` and silently freezes
+    # one of them under hard-discard.
+    @test_throws ArgumentError couple(
+        [Subsystem(_MonoP(); name = :P), Subsystem(_MonoQ(); name = :Q)],
+        [share(:P => :v, :Q => :v; owner = :P), share(:P => :v, :Q => :w; owner = :P)],
+    )
+
+    # R2 — `op` does not relax the one-owner rule: chaining still names two owners for one class.
+    @test_throws ArgumentError couple(
+        nodes,
+        [share(:P => :v, :J => :v; owner = :P, op = +), share(:J => :v, :J2 => :v; owner = :J, op = +)],
+    )
+end
+
+@testset "couple — a contributory share survives ForwardDiff" begin
+    # The sharp difference between an additive share and a `connect`. A `connect` input is frozen
+    # to its primal (ext/ForwardDiffExt.jl), so a derivative taken through one silently loses the
+    # coupling term. A share never leaves `U`, and the accumulate path holds its saved values in
+    # `eltype(dU)` — a Dual stays a Dual — so a STATE-DEPENDENT contribution stays in the Jacobian.
+    cm = couple(
+        [Subsystem(_MonoP(); name = :P), Subsystem(_MonoJState(); name = :J)],
+        [share(:P => :v, :J => :v; owner = :P, op = +)],
+    )
+    U = default_initial_state(cm)
+    J = ForwardDiff.jacobian(u -> (d = similar(u); cm(d, u, nothing, 0.0); d), U)
+
+    a, v = state_index(cm, :a), state_index(cm, :v)
+    # dv/dt = -K(v - a) + (-3v)  =>  ∂/∂v = -K - 3, and the "-3" is the contributed term.
+    @test J[v, v] == -_MONO_K - 3.0
+    @test J[v, a] == _MONO_K
+    @test J[a, a] == -0.1
+    @test all(isfinite, J)
+end
+
+@testset "couple — hard-discard couplings are structurally inert" begin
+    # The accumulate path must be invisible unless some share asks for it: with no `op = +` edge
+    # every entry's `accumulated` is an empty tuple, so `_save_accumulated` / `_add_back!` /
+    # `_reset_accumulators!` resolve to their `::Tuple{}` methods and compile away. Asserting the
+    # structure (not just the numbers) is what makes "the numbers cannot move" a property rather
+    # than an observation.
+    couplings = [
+        couple([Subsystem(_MonoP(); name = :P), Subsystem(_MonoQ(); name = :Q)],
+               [share(:P => :v, :Q => :v; owner = :P)]),
+        couple([Subsystem(_ScatterA(); name = :A), Subsystem(_ScatterB(); name = :B)],
+               [share(:A => :p, :B => :y; owner = :A)]),
+        couple([Subsystem(_MonoA(); name = :A), Subsystem(_MonoReader(); name = :R)],
+               [connect(:A => :d, :R => :d_ext)]),
+    ]
+    for cm in couplings
+        @test cm.additive_slots === ()
+        @test all(e -> e.accumulated === (), cm.plan)
+    end
 end
 
 @testset "couple — connect does not mutate the caller's model" begin

@@ -76,7 +76,9 @@ inlines. Each entry carries:
 - the component model itself,
 - its `solution_indices` view into the global vectors,
 - its **frozen indices** — the local positions whose derivative must be zeroed because the
-  component is a non-owner of that shared slot,
+  component is a hard-discard non-owner of that shared slot,
+- its **accumulated indices** — the local positions belonging to a class shared with `op = +`,
+  saved before the component runs and added back after,
 - its **connect plan**, partitioned into homogeneous overwrite and add lists, once for
   state-sourced edges and again for monitor-sourced ones.
 
@@ -104,22 +106,48 @@ Then, for every component in `operator_order`:
    pre-pass scratch, and written into the receiver's parameter slots — overwrites first, then
    additive edges, whose target slots are reset to zero before summing. Because the read is from
    `U` rather than a cached buffer, the receiver always sees the current value.
-2. **Run the component**, with each submodel writing into a `view` of the shared `dU` and
+2. **Save the accumulating slots** this component is about to overwrite, into an `NTuple` in
+   `eltype(dU)` — a stack temporary, so a `Dual` stays a `Dual`.
+3. **Run the component**, with each submodel writing into a `view` of the shared `dU` and
    reading a `view` of the shared `U`. A submodel therefore needs no awareness that it is
    coupled — it sees ordinary contiguous state and derivative vectors.
-3. **Zero the frozen entries** of `dU`, discarding the non-owner's contribution to any shared
-   slot.
+4. **Zero the frozen entries** of `dU`, discarding the hard-discard non-owner's contribution to
+   any shared slot.
+5. **Add the saved values back**, turning the component's wholesale write of its `du` view into
+   an accumulation.
 
 The pre-pass running before all staging is why a monitor source may not also *receive* a connect
 edge: its monitors would be computed from parameters staged on the previous evaluation. `couple`
 rejects that overlap.
 
-`operator_order` places the **owner last** for every shared slot, so the owner's write is the
-final one and therefore the one that survives.
+`operator_order` places the **owner last** for every *hard-discard* shared slot, so the owner's
+write is the final one and therefore the one that survives.
 
 That combination — zero the non-owners, order the owner last — is how "which equation governs
 this slot" is decided without any splitting schedule. It is a direct consequence of the
 monolithic architecture; see [Design Notes](design.md).
+
+## Accumulating Slots
+
+A class shared with `op = +` inverts the requirement: hard discard needs the owner to write
+*last*, while accumulation would want it *first*. Rather than adjudicate — impossible when one
+class mixes both — the accumulate path is made **order-free**.
+
+Every member of an accumulating class, owner and hard-discard member and contributor alike,
+carries the slot in its `accumulated` indices, and each saves the running value across its own
+write and adds it back. `_operator_order` therefore emits no precedence edge for such a class,
+which is what makes mutual contribution (two components each contributing to the other's slot)
+expressible where hard-discard shares reject it as a cyclic order.
+
+Because `dU` arrives from the solver dirty, every accumulating global slot is reset once before
+the walk — the same zero-then-accumulate discipline `_connect!` uses for an `op = +` parameter
+slot. The result is a **cross-sectional** sum of one evaluation's contributions, never a running
+total across evaluations. The slot list is derived from the plan itself, so the reset and the
+save/restore cannot disagree about which slots accumulate.
+
+None of this costs anything when unused: with no `op = +` edge every entry's `accumulated` is an
+empty tuple and the slot list is `()`, so all three helpers resolve to their `Tuple{}` methods
+and vanish. It is dispatch, not a runtime branch.
 
 ## The ForwardDiff Seam
 

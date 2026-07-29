@@ -13,7 +13,7 @@ one marked ❌ is not expressible yet and is covered in [Limitations](limitation
 | State ↔ parameter flip | parameter ⇄ state | composition | ✅ |
 | Derived observable | state → derived | monitor hooks | ✅ |
 | Derived-source wire | derived → parameter | `connect` (monitor source) | ✅ |
-| Additive contributed flux | two equations into one derivative | — | ❌ |
+| Additive contributed flux | two equations into one derivative | `share(…; op = +)` | ✅ |
 
 ## The Running Example
 
@@ -201,21 +201,23 @@ Conservation laws and other algebraic functions of state are not states and shou
 integrated. They are surfaced through the monitor hooks and recomputed after the solve — see
 [Derived Observables](../monitors.md).
 
-## ❌ Additive Contributed Flux
+## ✅ Additive Contributed Flux
 
 Some feedback couplings need two models to each add a term to the *same* state's derivative:
-the owner's core equation plus another module's extra flux. Today's `share` is hard-discard
-— exactly one equation governs — so this cannot be expressed. See
-[Limitations](limitations.md).
+the owner's core equation plus another module's extra flux. Pass `op = +` and the non-owner's
+derivative is summed into the owner's slot instead of discarded.
 
-## ❌ Derived-Source Wire
+```julia
+share(:D => :w, :Redox => :w_flux; owner = :D, op = +)
+```
 
-A `connect` source must resolve to a state. Sourcing one from a derived quantity — wiring
-`ADP = C_A - ATP` into another model's parameter slot — is not supported; you would have to
-promote the derived quantity to a real state first. See [Limitations](limitations.md).
+The contributing module carries the term as an ordinary state whose derivative *is* the flux, so
+it needs no awareness of the coupling. Several contributors into one slot sum, and a contributory
+class imposes no operator ordering. See [Share Edges](share.md).
 
 ## See Also
 
-- [Limitations](limitations.md) — the two ❌ rows, and the automatic-differentiation caveat.
+- [Limitations](limitations.md) — the automatic-differentiation caveat and the rest of the
+  real constraints.
 - `examples/coupling_mwe.jl` in the repository — the full taxonomy against a toy pair, with
   executable specifications for the patterns that do not exist yet.

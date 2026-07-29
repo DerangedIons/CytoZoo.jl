@@ -1,8 +1,9 @@
 # Coupling Limitations
 
 Everything on this page is a real constraint of the current implementation. Two of them can
-produce **silently wrong results**, so read those before building anything serious on
-`connect`.
+produce **silently wrong results** — derivatives through a `connect` edge, and a model that
+accumulates into its own `du` under a contributory `share` — so read those before building
+anything serious on either edge kind.
 
 ## Derivatives Through a `connect` Edge Are Wrong
 
@@ -58,33 +59,37 @@ solve(EnsembleProblem(prob; prob_func), Tsit5(), EnsembleThreads(); trajectories
 Full in-RHS reentrancy — routing connect inputs through the receiver's per-evaluation `p`
 rather than a stored vector — is a tracked follow-up, not a current property.
 
-## Contributions to a Shared State Cannot Sum
+## A Contributor's Initial Value Is Discarded
 
-Today's [`share`](share.md) is **hard-discard**: exactly one owner's equation governs the
-slot, and every other contribution is zeroed.
+Not a limitation of expressiveness — [`share(…; op = +)`](share.md) sums contributions to a
+shared derivative, so "one equation per shared state" is no longer a constraint. What survives
+is smaller and easy to trip over.
 
-Some feedback couplings need something different — two models each contributing a *term* to
-the same derivative:
+A contributory member supplies a *term in the owner's equation*, not a variable of its own. The
+shared slot's initial value comes from the **owner**, exactly as under hard-discard, so a
+contributor's `default_initial_state` entry for that state is ignored. If your module's local
+initial value for the contributed state matters, it is not a contribution — it is a separate
+state that should not be shared.
 
-```math
-\frac{dw}{dt} = \underbrace{f_{\text{core}}(w, \ldots)}_{\text{owner}} \;+\; \underbrace{J_{\text{module}}(\ldots)}_{\text{another subsystem}}
-```
+## A Component Must Fully Write Its Own `du`
 
-In Modelica's vocabulary, the current `share` implements an *across* variable (both sides see
-one value), whereas this needs a *through* (flow) variable, where contributions sum. There is
-no way to express it today.
+The interface has always expected a component to *write* every derivative slot it owns rather
+than accumulate into one. `dU` arrives from the solver dirty, so a model that does
+`du[i] += …` without first assigning `du[i]` was already reading garbage.
 
-Candidate designs, none implemented:
+An accumulating slot sharpens the consequence. Because the coupling adds each member's write
+onto a running total, a model that accumulates into its own `du` sees a *plausible partial sum*
+there rather than obvious garbage — so the bug turns into a silent double-count instead of an
+obvious `NaN`. Assign first, then modify:
 
 ```julia
-share(:D => :w, :X => :w_flux; owner = :D, op = +)   # contributory share
-inject(:X => :J, :D => :w)                           # a new edge kind
+du[1] = f(u, p, t)      # assign — never `du[1] += ...` as the first write
+du[1] -= g(u, p, t)     # fine once the slot is initialised
 ```
 
-!!! note "Do not assume one equation per shared state is permanent"
-    "A shared state has exactly one governing equation" is a property of today's
-    implementation, not a design invariant. It is expected to change when a consumer needs
-    additive coupling, so avoid building anything that depends on it.
+CytoZoo deliberately does **not** pre-zero each component's block to paper over this: it would
+repair a broken model on its shared states while leaving its private states broken, and add
+writes to the hot path.
 
 ## Derived Sources Must Be Declared, and Cost the Whole Monitor Vector
 
@@ -130,7 +135,8 @@ model has been run or tested on a device.
 | Derivatives through `connect` are wrong | **silent incorrectness** | `connect` only |
 | Newton convergence with tight stiff `connect` | performance | `connect` only |
 | One `CoupledModel` is not thread-safe | crash / corruption | `connect` receivers |
-| Shared-state contributions cannot sum | expressiveness | `share` |
+| A contributor's initial value is discarded | correctness trap | `share(…; op = +)` |
+| A model that accumulates into its own `du` double-counts | **silent incorrectness** | `share(…; op = +)` |
 | A derived source costs its model's whole monitor vector | performance | `connect` |
 | A monitor source cannot also receive an edge | expressiveness | `connect` |
 | No DAE coupling | scope | all |

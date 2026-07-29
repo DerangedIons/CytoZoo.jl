@@ -7,7 +7,8 @@
 #
 # Coupling is expressed as a graph: `Subsystem` nodes (a model) joined by directed edges. Two
 # edge kinds:
-#   - `share`   — two states are one variable (one global slot; the `owner`'s equation governs).
+#   - `share`   — two states are one variable (one global slot; the `owner`'s equation governs,
+#     and every other member's derivative is either discarded or added to it).
 #   - `connect` — a directed dataflow edge carrying an operation (copy by default): a source
 #     state is written into a receiver's parameter slot before the receiver steps.
 
@@ -28,26 +29,28 @@ Subsystem(model; name::Symbol = gensym(:subsystem)) = Subsystem(name, model)
     ShareSpec
 
 One `share` edge: state `a_state` of component `a` and state `b_state` of component `b` are
-the same physical quantity, sharing a single global state slot. `owner` (`a` or `b`) wins the
-equation (its write into the shared slot is final, by owner-last operator order) and supplies
-the canonical name and initial value. Build with [`share`](@ref).
+the same physical quantity, sharing a single global state slot. `owner` (`a` or `b`) supplies
+the governing equation, the canonical name and the initial value. `op` says what becomes of the
+**non-owner's** derivative: [`overwrite`](@ref) (the default) discards it, `+` adds it to the
+owner's. Build with [`share`](@ref).
 """
-struct ShareSpec
+struct ShareSpec{OP}
     a::Symbol
     a_state::Symbol
     b::Symbol
     b_state::Symbol
     owner::Symbol
     name::Symbol
+    op::OP
 end
 
 """
-    share(a => :state_a, b => :state_b; owner, name = <owner's state>)
+    share(a => :state_a, b => :state_b; owner, name = <owner's state>, op = overwrite)
 
 Declare that `state_a` of component `a` and `state_b` of component `b` are the **same**
 quantity (one shared global slot). `a` and `b` are subsystem names (see [`Subsystem`](@ref)).
-`owner` must be `a` or `b`; it decides whose equation governs the shared slot (the other's is
-hard-discarded) and supplies the canonical name (`name`) and initial value.
+`owner` must be `a` or `b`; it supplies the governing equation, the canonical name (`name`) and
+the initial value.
 
 Shares are resolved as equivalence **classes**, so a state may appear in more than one edge and
 the whole group still collapses to a single slot. To share one quantity across three or more
@@ -57,19 +60,52 @@ components, fan the edges out from the owner:
 [share(:A => :d, :B => :x; owner = :A), share(:A => :d, :C => :z; owner = :A)]
 ```
 
-Every non-owner in the class is frozen, and the result does not depend on the order the nodes
-were declared in. *Chaining* edges instead (`:A`–`:B`, then `:B`–`:C`) is an error: both edges
-name one class but declare different owners, and a shared slot has exactly one governing
-equation.
+The result does not depend on the order the nodes were declared in. *Chaining* edges instead
+(`:A`–`:B`, then `:B`–`:C`) is an error: both edges name one class but declare different owners,
+and a shared slot has exactly one governing equation. A component may contribute at most one
+state to a class — two of its states in one class would silently collapse onto one slot, so
+`couple` rejects it.
+
+`op` decides what happens to the **non-owner's** derivative:
+
+- [`overwrite`](@ref) (default) — *hard discard*. The non-owner reads the shared value but never
+  writes it; only the owner's equation drives the slot. In Modelica's vocabulary this is an
+  *across* variable.
+- `+` — *contributory*. The non-owner's derivative is **added** to the owner's, so the slot is
+  governed by `dw/dt = f_owner + Σ contributions`. This is a *through* (flow) variable, and it is
+  how a module contributes a flux to a core model's equation without either model being rewritten.
+
+The two mix freely within one class: an owner, any number of hard-discard members, and any number
+of contributors. Several contributors into one slot sum. The sum is **cross-sectional** — every
+accumulating slot is reset once per evaluation, so it holds one evaluation's contributions, never
+a running total across evaluations.
+
+An accumulating class imposes **no ordering** on its components (each member saves and restores
+the slot around its own write), so two components may contribute to each other's slots — a
+topology that hard-discard shares reject as a cyclic operator order.
+
+The owner still supplies the initial value; a contributor's own initial value for its local state
+is ignored, exactly as a hard-discard non-owner's is.
+
+Because a share flows entirely through the global state vector `U`, it is unaffected by the
+automatic-differentiation caveat that applies to [`connect`](@ref) edges — contributory shares
+included.
 """
 function share(
         a_pair::Pair{Symbol, Symbol}, b_pair::Pair{Symbol, Symbol};
-        owner::Symbol, name::Symbol = owner === a_pair.first ? a_pair.second : b_pair.second
+        owner::Symbol, name::Symbol = owner === a_pair.first ? a_pair.second : b_pair.second,
+        op = overwrite
     )
     a, a_state = a_pair
     b, b_state = b_pair
     owner in (a, b) || throw(ArgumentError("share owner must be :$a or :$b, got :$owner"))
-    return ShareSpec(a, a_state, b, b_state, owner, name)
+    op in (overwrite, +) || throw(
+        ArgumentError(
+            "share: op must be `overwrite` (the owner's equation governs and the non-owner's is " *
+                "discarded) or `+` (the non-owner's derivative is added to the owner's); got $op"
+        )
+    )
+    return ShareSpec(a, a_state, b, b_state, owner, name, op)
 end
 
 """
@@ -77,6 +113,9 @@ end
 
 Default [`connect`](@ref) operation: replace the receiver slot with the source value (copy).
 The other supported operation is `+`, which sums all edges targeting a slot.
+
+Also [`share`](@ref)'s default `op`, where it names the *hard-discard* semantics: the owner's
+equation overwrites the shared slot and the non-owner's derivative is dropped.
 """
 overwrite(_old, new) = new
 
@@ -180,8 +219,9 @@ end
     CoupledModel <: AbstractCardiacCellModel
 
 Composition of two or more `AbstractCellModel`s into one combined model with a shared global
-state vector. `share` edges merge two states into one slot; `connect` edges let one component
-read another's state through a parameter slot. Build with [`couple`](@ref).
+state vector. `share` edges merge two states into one slot — the owner's equation governing it
+alone, or summed with contributions from members declared `op = +`; `connect` edges let one
+component read another's state through a parameter slot. Build with [`couple`](@ref).
 
 A `CoupledModel` is a callable `f(dU, U, p, t)` assembled from its submodels, so it is solved
 monolithically with a single ODE solver via `ODEProblem(cm, tspan)` + `solve` (requires a
@@ -192,12 +232,13 @@ It also implements the layout/query interface (`num_states`, [`state_names`](@re
 [`state_index`](@ref), [`default_initial_state`](@ref),
 [`transmembrane_potential_index`](@ref)) so couplings nest.
 """
-struct CoupledModel{Cs <: NamedTuple, SS <: Tuple, CS <: Tuple, L <: CouplingLayout, PL <: Tuple, MP <: Tuple, MS <: AbstractVector} <: AbstractCardiacCellModel
+struct CoupledModel{Cs <: NamedTuple, SS <: Tuple, CS <: Tuple, L <: CouplingLayout, PL <: Tuple, AS <: Tuple, MP <: Tuple, MS <: AbstractVector} <: AbstractCardiacCellModel
     components::Cs
     shares::SS
     connects::CS
     layout::L
     plan::PL
+    additive_slots::AS   # global slots an accumulating class owns; `()` unless a share declares op = +
     monitor_plan::MP
     monitor_scratch::MS
     source_scratch::MS
@@ -219,15 +260,17 @@ function couple(nodes, edges = ())
     shares, connects = _split_edges(edges)
     _validate_specs(components, shares, connects)
     components = _copy_connect_receivers(components, connects)
-    parent, classes = _share_classes(shares)
+    parent, classes, additive = _share_classes(shares)
     layout = _compute_layout(components, parent, classes)
     monitor_plan, monitor_offsets, num_mon = _build_monitor_plan(components, connects, layout)
-    plan = _build_plan(components, parent, classes, connects, layout, monitor_offsets)
+    plan = _build_plan(components, parent, classes, additive, connects, layout, monitor_offsets)
+    additive_slots = _accumulating_slots(plan)
     T = eltype(layout.u0)
     monitor_scratch = zeros(T, num_mon)
     source_scratch = zeros(T, isempty(monitor_plan) ? 0 : maximum(e -> length(e.block), monitor_plan))
     return CoupledModel(
-        components, shares, connects, layout, plan, monitor_plan, monitor_scratch, source_scratch
+        components, shares, connects, layout, plan, additive_slots,
+        monitor_plan, monitor_scratch, source_scratch,
     )
 end
 
@@ -406,9 +449,12 @@ end
 # single variable and must collapse to one global slot. Union-find over `(component, state)`
 # keys gives that for chains, fan-out from one state, and groups of any size uniformly.
 #
-# Each class has exactly one owner — the component whose equation drives the slot; every
-# other member is frozen. Two edges in one class naming different owners is a contradiction
-# and throws.
+# Each class has exactly one owner — the component whose equation drives the slot. Every other
+# member is either frozen (`op = overwrite`, its derivative discarded) or contributory
+# (`op = +`, its derivative added to the owner's); a class with at least one contributor is
+# `additive` and takes the accumulate path. Two edges in one class naming different owners is a
+# contradiction and throws, whatever their ops — `op` decides what happens to the non-owners,
+# not who owns.
 
 const StateKey = Tuple{Symbol, Symbol}
 
@@ -417,12 +463,14 @@ const StateKey = Tuple{Symbol, Symbol}
 
 Resolved metadata for one share equivalence class: the component whose equation governs the
 shared slot (`owner`), the owner's local state name (`owner_state`, which supplies the slot's
-initial value), and the slot's canonical `name`.
+initial value), the slot's canonical `name`, and whether any member contributes its derivative
+additively (`additive`, true as soon as one edge in the class declares `op = +`).
 """
 struct ShareClass
     owner::Symbol
     owner_state::Symbol
     name::Symbol
+    additive::Bool
 end
 
 # Path-compressed find; a key absent from `parent` is its own root.
@@ -448,13 +496,34 @@ function _share_classes(shares::Tuple)
         ra === rb || (parent[ra] = rb)
     end
 
+    # `op` marks the edge's NON-OWNER endpoint. An endpoint that is some other edge's owner
+    # endpoint therefore can never be additive: that would need either a second owner in the class
+    # (rejected just below) or one component twice in one class (rejected by
+    # `_check_one_state_per_class`). "The owner's equation is always kept" is true by construction
+    # rather than by check.
+    additive = Set{StateKey}()
+    hard = Set{StateKey}()
+    for sh in shares
+        other = sh.owner === sh.a ? (sh.b, sh.b_state) : (sh.a, sh.a_state)
+        push!(sh.op === (+) ? additive : hard, other)
+        (other in additive && other in hard) && throw(
+            ArgumentError(
+                "share endpoint :$(other[1]).:$(other[2]) is declared both contributory (op = +) " *
+                    "and hard-discard (op = overwrite); an endpoint either adds its derivative to " *
+                    "the shared slot or has it discarded, not both. Give every edge naming it the " *
+                    "same op."
+            ),
+        )
+    end
+
     classes = Dict{StateKey, ShareClass}()
     for sh in shares
         r = _find_root(parent, (sh.a, sh.a_state))
         owner_state = sh.owner === sh.a ? sh.a_state : sh.b_state
+        is_additive = sh.op === (+)
         prev = get(classes, r, nothing)
         if prev === nothing
-            classes[r] = ShareClass(sh.owner, owner_state, sh.name)
+            classes[r] = ShareClass(sh.owner, owner_state, sh.name, is_additive)
         elseif prev.owner !== sh.owner
             throw(
                 ArgumentError(
@@ -465,9 +534,35 @@ function _share_classes(shares::Tuple)
                         "rather than chaining them."
                 ),
             )
+        else
+            # `op` is per EDGE, so one contributor makes the whole class additive: the owner and
+            # every hard-discard member then ride the same save/restore path in `_run!`.
+            classes[r] = ShareClass(prev.owner, prev.owner_state, prev.name, prev.additive | is_additive)
         end
     end
-    return parent, classes
+
+    _check_one_state_per_class(shares, parent)
+    return parent, classes, additive
+end
+
+# A component may contribute at most one state to a class. Two of its states in one class collapse
+# onto a single global slot with one of them silently frozen — degenerate under hard-discard, and
+# an outright double-count under `op = +`, where both local positions would save and restore the
+# same slot. Iterating `shares` (not `parent`) keeps the message deterministic.
+function _check_one_state_per_class(shares::Tuple, parent)
+    seen = Dict{Tuple{StateKey, Symbol}, Symbol}()   # (class root, component) -> its state in that class
+    for sh in shares, (comp, st) in ((sh.a, sh.a_state), (sh.b, sh.b_state))
+        r = _find_root(parent, (comp, st))
+        prev = get!(seen, (r, comp), st)
+        prev === st || throw(
+            ArgumentError(
+                "states :$comp.:$prev and :$comp.:$st are transitively the same shared slot; a " *
+                    "share merges states of two DIFFERENT components, so one component cannot " *
+                    "contribute two states to one class. Check the edges naming :$comp."
+            ),
+        )
+    end
+    return nothing
 end
 
 # --- layout ---
@@ -538,18 +633,21 @@ function _compute_layout(components::NamedTuple, parent, classes)
     return CouplingLayout(length(names), solution_indices, names, name_to_index, u0, operator_order, vm_index)
 end
 
-# Operator-application order: every non-owner member of a share class steps before that
-# class's owner, so the owner's write into the shared slot is final. Stable topological sort
-# over component keys; iterating components/states (not the `parent` dict) keeps it
-# deterministic.
+# Operator-application order: every non-owner member of a hard-discard share class steps before
+# that class's owner, so the owner's write into the shared slot is final. An ACCUMULATING class
+# imposes no precedence at all — every member saves and restores the slot around its own write, so
+# the total is order-free — which is what lets two components contribute to each other's slots, a
+# topology hard-discard shares reject as cyclic. Stable topological sort over component keys;
+# iterating components/states (not the `parent` dict) keeps it deterministic.
 function _operator_order(comp_keys::NTuple{N, Symbol}, components::NamedTuple, parent, classes) where {N}
     edges = Tuple{Symbol, Symbol}[]   # (before, after)
     for ck in comp_keys
         for sname in state_names(components[ck])
             key = (ck, sname)
             haskey(parent, key) || continue
-            owner = classes[_find_root(parent, key)].owner
-            ck === owner || push!(edges, (ck, owner))
+            cls = classes[_find_root(parent, key)]
+            cls.additive && continue
+            ck === cls.owner || push!(edges, (ck, cls.owner))
         end
     end
     isempty(edges) && return collect(comp_keys)
@@ -563,7 +661,13 @@ function _operator_order(comp_keys::NTuple{N, Symbol}, components::NamedTuple, p
     while !isempty(remaining)
         ready = filter(c -> indeg[c] == 0, remaining)
         isempty(ready) &&
-            throw(ArgumentError("share owners imply a cyclic operator order; restructure with nested couple(...)"))
+            throw(
+                ArgumentError(
+                    "share owners imply a cyclic operator order; restructure with nested " *
+                        "couple(...), or declare the contested shares `op = +` — an accumulating " *
+                        "class imposes no ordering"
+                ),
+            )
         next = first(ready)               # stable: first in original order
         push!(order, next)
         deleteat!(remaining, findfirst(==(next), remaining))
@@ -578,8 +682,10 @@ end
 #
 # Assemble one combined f(dU, U, p, t) from the submodels: each component writes into its own
 # view of the shared dU/U, connect inputs are read live from U into receiver parameter slots,
-# and non-owned shared-slot derivatives are zeroed so the owner's write (last, by operator
-# order) governs. The plan is built once at couple() time and stored concretely-typed on the
+# and hard-discarded shared-slot derivatives are zeroed so the owner's write (last, by operator
+# order) governs. A slot shared with `op = +` instead accumulates: each member saves the running
+# value across its own write and adds it back, which sums the contributions and makes the class
+# order-free. The plan is built once at couple() time and stored concretely-typed on the
 # CoupledModel so the functor specializes and stays allocation-free.
 
 """
@@ -587,18 +693,21 @@ end
 
 One component's pre-resolved execution entry in a [`CoupledModel`](@ref)'s monolithic plan.
 `block` is the component's slice of the global state (a `UnitRange` when contiguous, else an
-index vector); `frozen` are local indices of shared states it does not own (zeroed after its
-functor, so the owner's write wins); `overwrites`/`adds` are state-sourced connect edges resolved
-to `(src_global_index, dst_param_index)`, and `monitor_overwrites`/`monitor_adds` the
+index vector); `frozen` are local indices of shared states it neither owns nor contributes to
+(zeroed after its functor, so the owner's write wins); `accumulated` are local indices belonging
+to an accumulating class — saved before the functor and added back after, so contributions sum
+whatever the operator order; `overwrites`/`adds` are state-sourced connect edges resolved to
+`(src_global_index, dst_param_index)`, and `monitor_overwrites`/`monitor_adds` the
 monitor-sourced ones resolved to `(monitor_scratch_index, dst_param_index)`; `params` is the
 receiver's `writable_parameters` vector (a private deepcopy made by `couple`, so staging never
 mutates the caller's model), or `nothing` when it has no incoming connect edges.
 """
-struct CompEntry{M, B, P, F, OW, AD, MOW, MAD}
+struct CompEntry{M, B, P, F, AC, OW, AD, MOW, MAD}
     model::M
     block::B
     params::P
     frozen::F
+    accumulated::AC
     overwrites::OW
     adds::AD
     monitor_overwrites::MOW
@@ -626,14 +735,14 @@ _connect_value(x) = x
 
 # Build a concretely-typed tuple of entries in operator order (recursion keeps element types
 # concrete → the functor specializes and stays allocation-free on the contiguous-block case).
-_build_plan(components, parent, classes, connects, layout, mon_offsets) =
-    _entries(components, parent, classes, connects, layout, mon_offsets, layout.operator_order, 1)
+_build_plan(components, parent, classes, additive, connects, layout, mon_offsets) =
+    _entries(components, parent, classes, additive, connects, layout, mon_offsets, layout.operator_order, 1)
 
-_entries(components, parent, classes, connects, layout, mon_offsets, order, i) =
+_entries(components, parent, classes, additive, connects, layout, mon_offsets, order, i) =
     i > length(order) ? () :
     (
-        _entry(components, parent, classes, connects, layout, mon_offsets, order[i]),
-        _entries(components, parent, classes, connects, layout, mon_offsets, order, i + 1)...,
+        _entry(components, parent, classes, additive, connects, layout, mon_offsets, order[i]),
+        _entries(components, parent, classes, additive, connects, layout, mon_offsets, order, i + 1)...,
     )
 
 # The component's slice of the global state: a UnitRange when contiguous (fast view), else the
@@ -641,9 +750,10 @@ _entries(components, parent, classes, connects, layout, mon_offsets, order, i) =
 # type parameter, so the functor stays specialized.
 _block(idxs) = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
 
-function _entry(components, parent, classes, connects, layout, mon_offsets, ck)
+function _entry(components, parent, classes, additive, connects, layout, mon_offsets, ck)
     si = layout.solution_indices
-    frozen = _frozen_indices(components, parent, classes, ck)
+    frozen = _frozen_indices(components, parent, classes, additive, ck)
+    accumulated = _accumulated_indices(components, parent, classes, ck)
     ow_l, ad_l, mow_l, mad_l = _connect_plan(components, connects, ck)
     toglobal(e) = (si[e[1]][e[2]], e[3])        # (src, src_local, dst_param) -> (src_global, dst_param)
     tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3])   # -> (monitor_scratch_index, dst_param)
@@ -654,9 +764,22 @@ function _entry(components, parent, classes, connects, layout, mon_offsets, ck)
     has_edges = !(isempty(ow_l) && isempty(ad_l) && isempty(mow_l) && isempty(mad_l))
     params = has_edges ? writable_parameters(components[ck]) : nothing
     return CompEntry(
-        components[ck], _block(si[ck]), params, frozen,
+        components[ck], _block(si[ck]), params, frozen, accumulated,
         overwrites, adds, monitor_overwrites, monitor_adds,
     )
+end
+
+# Every global slot an accumulating class owns, collected from the very plan the walk will use, so
+# the pre-walk reset and the per-component save/restore cannot disagree about which slots
+# accumulate. Deduplicated — several components save and restore one slot, but it is reset once.
+# `()` unless some share declares `op = +`, which is what makes `_reset_accumulators!` vanish.
+function _accumulating_slots(plan::Tuple)
+    slots = Int[]
+    for e in plan, i in e.accumulated
+        g = e.block[i]
+        g in slots || push!(slots, g)
+    end
+    return Tuple(slots)
 end
 
 # Components sourcing at least one monitor, each with its slice of the coupling's flat monitor
@@ -690,17 +813,49 @@ function _mon_entry(components, layout, offsets, ck)
     return MonEntry(components[ck], _block(layout.solution_indices[ck]), (off + 1):(off + num_monitors(components[ck])))
 end
 
+# Save the running value of every accumulating slot this component is about to overwrite. An
+# `NTuple` in `eltype(dU)` — a stack temporary, so a `Dual` stays a `Dual`. A share must not lose
+# derivative information the way a `connect` input does at `_connect_value`: flowing through `U`
+# untouched by any Float64 scratch is the whole reason to prefer `share` under AD.
+_save_accumulated(dU, block, ::Tuple{}) = ()
+@inline _save_accumulated(dU, block, accumulated::Tuple) =
+    map(i -> (@inbounds dU[block[i]]), accumulated)
+
+# Add the saved running value back onto what the component just wrote, turning its wholesale write
+# of the `du` view into an accumulation. Recursive on `Base.tail` so the index/value tuple pair
+# unrolls with no dynamic tuple indexing.
+_add_back!(dU, block, ::Tuple{}, ::Tuple{}) = nothing
+@inline function _add_back!(dU, block, accumulated::Tuple, saved::Tuple)
+    @inbounds dU[block[first(accumulated)]] += first(saved)
+    return _add_back!(dU, block, Base.tail(accumulated), Base.tail(saved))
+end
+
 # Evaluate the assembled RHS: walk the plan (fully unrolled), each component staging its connect
-# inputs, writing into its view of dU/U, then zeroing its non-owned shared-slot derivatives.
+# inputs, saving any accumulating slot it is about to overwrite, writing into its view of dU/U,
+# zeroing its hard-discarded shared-slot derivatives, then adding the saved running sum back. The
+# freeze must stay BETWEEN the model call and the add-back: reversed, a hard-discard member of an
+# accumulating class would zero the running sum instead of just its own contribution.
 _run!(dU, U, p, t, ::Tuple{}, mon) = nothing
 function _run!(dU, U, p, t, plan, mon)
     e = first(plan)
     _connect!(U, mon, e.params, e.overwrites, e.adds, e.monitor_overwrites, e.monitor_adds)
+    saved = _save_accumulated(dU, e.block, e.accumulated)
     e.model(view(dU, e.block), view(U, e.block), p, t)
     @inbounds for i in e.frozen
         dU[e.block[i]] = zero(eltype(dU))
     end
+    _add_back!(dU, e.block, e.accumulated, saved)
     return _run!(dU, U, p, t, Base.tail(plan), mon)
+end
+
+# `dU` arrives dirty — the solver does not zero it — so every accumulating slot is reset once,
+# before the walk. Same zero-then-accumulate discipline `_connect!` uses for an `op = +` parameter
+# slot: the result is a cross-sectional sum of one evaluation's contributions, never a running
+# total across evaluations.
+_reset_accumulators!(dU, ::Tuple{}) = nothing
+@inline function _reset_accumulators!(dU, slots::Tuple)
+    @inbounds dU[first(slots)] = zero(eltype(dU))
+    return _reset_accumulators!(dU, Base.tail(slots))
 end
 
 # Monitor pre-pass: fill the flat monitor scratch from each monitor-sourcing component's own
@@ -798,6 +953,7 @@ end
 # `ODEProblem(cm, tspan)` + `solve` (see ext/SciMLBaseExt.jl).
 function (cm::CoupledModel)(dU, U, p, t)
     _monitors!(U, t, cm.monitor_plan, cm.monitor_scratch, cm.source_scratch)
+    _reset_accumulators!(dU, cm.additive_slots)
     _run!(dU, U, p, t, cm.plan, cm.monitor_scratch)
     return nothing
 end
@@ -810,21 +966,40 @@ end
 
 # --- coupling-semantics helpers (consumed by the monolithic plan builder) ---
 
-# Local state indices of `ck` that belong to a share class `ck` does not own (the monolithic plan
-# zeroes these so the class owner's write into the shared slot wins). Driven by the resolved
-# equivalence classes, not by individual edges, so every non-owner member of a multi-way share is
-# frozen exactly once.
-function _frozen_indices(components::NamedTuple, parent, classes, ck::Symbol)
+# Local state indices of `ck` that belong to a share class `ck` neither owns nor contributes to
+# (the monolithic plan zeroes these so the class owner's write into the shared slot wins). Driven
+# by the resolved equivalence classes, not by individual edges, so every hard-discard member of a
+# multi-way share is frozen exactly once. `additive` carries the per-ENDPOINT ops, since one class
+# may mix contributors and hard-discard members.
+function _frozen_indices(components::NamedTuple, parent, classes, additive, ck::Symbol)
     snames = state_names(components[ck])
     frozen = Int[]
     for (li, sname) in enumerate(snames)
         key = (ck, sname)
         haskey(parent, key) || continue
         cls = classes[_find_root(parent, key)]
-        (cls.owner === ck && cls.owner_state === sname) && continue
+        (cls.owner === ck && cls.owner_state === sname) && continue   # the owner's write governs
+        key in additive && continue                                   # a contributor ADDS its write
         push!(frozen, li)
     end
     return Tuple(frozen)
+end
+
+# Local state indices of `ck` belonging to an ACCUMULATING share class — whatever `ck`'s role in
+# it. Owner, hard-discard member and contributor alike must save the slot's running value across
+# their own write, because a component functor fills its whole `du` view and would otherwise
+# clobber it. That uniformity is what makes an accumulating class independent of operator order.
+# Empty unless some share declares `op = +`, so the save/restore compiles away on a hard-discard
+# coupling.
+function _accumulated_indices(components::NamedTuple, parent, classes, ck::Symbol)
+    accumulated = Int[]
+    for (li, sname) in enumerate(state_names(components[ck]))
+        key = (ck, sname)
+        haskey(parent, key) || continue
+        classes[_find_root(parent, key)].additive || continue
+        push!(accumulated, li)
+    end
+    return Tuple(accumulated)
 end
 
 # Resolve the connect edges targeting `ck` into four vectors of

@@ -68,7 +68,8 @@ path.
 - Because every component writes into one shared `dU`, "which equation governs a shared slot"
   is resolved by **ordering plus zeroing** — owner last, non-owner contributions zeroed —
   rather than by a splitting schedule. That is where [`share`](@ref)'s hard-discard semantics
-  come from.
+  come from. A contributory share (`op = +`) works in the same shared `dU`, saving and restoring
+  the slot around each member's write so contributions sum without any ordering at all.
 - Higher-order (Strang) splitting, once listed as future work, is moot.
 
 ## Priorities That Shaped the Coupling API
@@ -100,10 +101,13 @@ time- and space-varying payload rather than structural configuration. See
 
 Carried forward deliberately, not overlooked:
 
-- **Additive / contributory share.** The current `share` is hard-discard, so two models cannot
-  each contribute a term to one shared derivative. This is Modelica's *through* (flow)
-  variable, as opposed to the *across* variable `share` implements. Deferred until a consumer
-  needs it — and explicitly **not** to be treated as a permanent invariant.
+- **Flux injection as a distinct edge kind.** Additive contribution itself is shipped, as
+  `share(…; op = +)` — Modelica's *through* (flow) variable alongside the *across* variable that
+  hard-discard `share` implements. What was not built is the alternative spelling
+  `inject(:X => :J, :D => :w)`, sourcing a named DERIVED flux: a monitor source is resolved in a
+  pre-pass, so it may not also receive a `connect` edge, and its value passes through
+  `_connect_value`, which would strip the term out of every derivative. Revisit only for a module
+  that cannot carry its contribution as a state.
 - **GPU compatibility.** Not precluded; the design keeps structs isbits-friendly. Not shipped
   or tested.
 - **Non-ODE components.** DAE and algebraic-constraint coupling remain out of scope.

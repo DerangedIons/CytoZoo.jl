@@ -9,12 +9,13 @@
 # New to CytoZoo coupling? Start with examples/coupling_toy.jl — a minimal 2-pattern (share +
 # connect) intro. This file is the comprehensive driver, not a gentle first read.
 #
-# Socket map (✅ = expressible today, ❌ = drives new API):
+# Socket map (✅ = expressible today; every row is live — see the TARGET API note at the bottom
+# for the one alternative spelling that was considered and not built):
 #   1 u   feedforward WIRE (overwrite): D state → R param slot            ✅  connect(:D=>:u, :R=>:p_u)
 #   2 v   feedforward WIRE (overwrite)                                    ✅  connect(:D=>:v, :R=>:p_v)
 #   3 b   DERIVED-source WIRE: D derived → Redox param slot               ✅  connect(:D=>:b, :Redox=>:p_b)
 #   4 a/e adopt-native / drop receiver state (owner wins)                 ✅  share(:D=>:a, :R=>:e; owner=:D)
-#   5 w   feedback additive contributed-flux into a shared derivative     ❌  share=hard-discard; connect writes a param
+#   5 w   feedback additive contributed-flux into a shared derivative     ✅  share(:D=>:w, :Redox=>:w_flux; owner=:D, op=+)
 #   6 redox    module on/off = compose with/without the ToyRedox subsystem  ✅  include/omit Subsystem(ToyRedox)
 #   7 cyto_ions edge on/off = compose with/without the WIRE edges           ✅  include/omit edges at couple()
 #   8 h        state↔param role flip = compose with/without the ToyH subsystem  ✅  include/omit Subsystem(ToyH) + connect
@@ -129,10 +130,14 @@ function CytoZoo.monitor_values!(mon, u, t, m::ToyResponder)
 end
 
 # =====================================================================================
-# ToyRedox — an OPTIONAL subsystem (≈ the redox module). State z. Compose it in to switch redox
-# ON; leave it out to switch OFF (the rest recovers baseline, since z is a leaf nothing reads).
-# It reads a wired driver signal through p_u; its flux J = gJ·z is the feedback R would contribute
-# upstream (socket 5, not yet expressible).
+# ToyRedox — an OPTIONAL subsystem (≈ the redox module). States z and w_flux. Compose it in to
+# switch redox ON; leave it out to switch OFF (the rest recovers baseline, since neither state is
+# read by anything downstream). It reads a wired driver signal through p_u.
+#
+# `w_flux` is how a module contributes a term to someone else's equation: its derivative is the
+# flux J = gJ·z, and a contributory share (`op = +`, socket 5) adds that into D's `dw`. Written
+# standalone it is just an ordinary state whose derivative happens to be J — the module needs no
+# awareness of the coupling, which is the same authoring property hard-discard `share` has.
 # =====================================================================================
 
 const REDOX_PARAMS = (:p_u, :p_b, :shunt, :kz)
@@ -146,23 +151,24 @@ function ToyRedox(; elT::Type = Float64)
     return ToyRedox(θ)
 end
 
-CytoZoo.num_states(::ToyRedox) = 1
+CytoZoo.num_states(::ToyRedox) = 2
 CytoZoo.num_parameters(m::ToyRedox) = length(m.parameters)
-CytoZoo.state_names(::ToyRedox) = (:z,)
+CytoZoo.state_names(::ToyRedox) = (:z, :w_flux)
 CytoZoo.parameter_names(::ToyRedox) = REDOX_PARAMS
-CytoZoo.state_index(::ToyRedox, n::Symbol) = findfirst(==(n), (:z,))
+CytoZoo.state_index(::ToyRedox, n::Symbol) = findfirst(==(n), (:z, :w_flux))
 CytoZoo.parameter_index(::ToyRedox, n::Symbol) = findfirst(==(n), REDOX_PARAMS)
 CytoZoo.transmembrane_potential_index(::ToyRedox) = 1
-CytoZoo.default_initial_state(::ToyRedox{T}) where {T} = T[0]   # z
+CytoZoo.default_initial_state(::ToyRedox{T}) where {T} = T[0, 0]   # z, w_flux
 
 function (m::ToyRedox)(du, u, p, t)
     p_u, p_b, shunt, kz = m.parameters[1], m.parameters[2], m.parameters[3], m.parameters[4]
     du[1] = shunt * (p_u + p_b) - kz * u[1]    # z — redox accumulator driven by wired inputs
+    du[2] = redox_flux_J(m, u)                 # w_flux — the term contributed upstream (socket 5)
     return nothing
 end
 
-# The feedback flux the redox module contributes upstream (socket 5): J = gJ·z, ready to be added
-# into D's `w` derivative — but no edge kind can carry it yet (see TARGET API below).
+# The feedback flux the redox module contributes upstream (socket 5): J = gJ·z, added into D's `w`
+# derivative by `share(:D => :w, :Redox => :w_flux; owner = :D, op = +)`.
 redox_flux_J(m::ToyRedox, u) = 0.5 * u[1]   # J = gJ·z
 
 # =====================================================================================
@@ -252,7 +258,7 @@ let tspan = (0.0, 5.0), opts = (dt = 0.01, adaptive = false)
     # `b` is DERIVED, not integrated: wiring it adds no state, and the conservation law a + b = Ca
     # stays inside ToyDriver rather than being restated at the edge.
     @assert state_index(cm, :b) === nothing "the monitor b leaked into the global state"
-    @assert num_states(cm) == 5 "expected D's 4 states + Redox's z, got $(num_states(cm))"
+    @assert num_states(cm) == 6 "expected D's 4 states + Redox's z, w_flux, got $(num_states(cm))"
 
     # Structural: Redox's dz reads b = Ca − a live, not its standalone p_b default of 0.
     U = default_initial_state(cm)
@@ -298,6 +304,52 @@ let tspan = (0.0, 8.0)
     @assert approx(m_final, 2.0; atol = 1e-2) "share: R.m did not adopt D's energy a*"
     println("  shared slot = D's a (R's de discarded);  R.m → ", round(m_final; digits = 4),
             "  (D's a* = 2.0, not R's e0 = 3.0)")
+end
+
+# --- socket 5 — contributory share (Redox's +J summed into D's dw) ---------------------------
+println("── socket 5 — contributory share (additive contributed flux) ──")
+let tspan = (0.0, 20.0), opts = (dt = 0.01, adaptive = false)
+    D = ToyDriver()
+    edges = (connect(:D => :u, :Redox => :p_u),                              # drive the module
+             share(:D => :w, :Redox => :w_flux; owner = :D, op = +))         # ...and take its flux back
+    cm = couple((Subsystem(D; name = :D), Subsystem(ToyRedox(); name = :Redox)), edges)
+
+    # A contribution MERGES into the owner's slot rather than adding one: w_flux is not a new
+    # variable, it is a term in D's existing equation.
+    @assert num_states(cm) == 5 "expected D's 4 states + Redox's z (w_flux folded onto w), got $(num_states(cm))"
+    @assert state_index(cm, :Redox_w_flux) === nothing "w_flux did not fold onto the shared w"
+
+    # Structural, against a hand-rolled reference: dw must be D's OWN equation plus J, exactly.
+    # Evaluated at z ≠ 0 so the contributed term is not trivially zero.
+    U = default_initial_state(cm)
+    U[state_index(cm, :Redox_z)] = 1.5
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    Pw, Lw = D.parameters[7], D.parameters[8]
+    w0 = U[state_index(cm, :w)]
+    J0 = redox_flux_J(ToyRedox(), (U[state_index(cm, :Redox_z)],))
+    @assert approx(dU[state_index(cm, :w)], Pw - Lw * w0 + J0) "socket 5: dw is not f_D + J"
+
+    # The same graph with the default op is hard-discard: Redox's equation for the slot is dropped
+    # and dw is D's alone. Same edge, one keyword apart — the contrast socket 4 sets up.
+    hd = couple(
+        (Subsystem(ToyDriver(); name = :D), Subsystem(ToyRedox(); name = :Redox)),
+        (connect(:D => :u, :Redox => :p_u), share(:D => :w, :Redox => :w_flux; owner = :D)),
+    )
+    dU_hd = similar(U)
+    cm_hd_U = copy(U)
+    hd(dU_hd, cm_hd_U, nothing, 0.0)
+    @assert approx(dU_hd[state_index(hd, :w)], Pw - Lw * w0) "socket 5: hard-discard leaked a contribution"
+
+    # Behavioural: w' = Pw − Lw·w + J settles above the uncontributed steady state Pw/Lw.
+    son = solve(ODEProblem(cm, tspan), Tsit5(); opts...)
+    soff = solve(ODEProblem(hd, tspan), Tsit5(); opts...)
+    w_on = son.u[end][state_index(cm, :w)]
+    w_off = soff.u[end][state_index(hd, :w)]
+    @assert w_on > w_off + 1.0e-3 "socket 5: the contribution did not lift w"
+    @assert approx(w_off, Pw / Lw; atol = 1.0e-6) "socket 5: hard-discard w did not settle at Pw/Lw"
+    println("  dw = Pw − Lw·w + J (J = gJ·z);  w(end) = ", round(w_on; digits = 4),
+            "  vs hard-discard ", round(w_off; digits = 4), " (= Pw/Lw)")
 end
 
 # --- socket 6 — redox module on/off by composition (include vs. omit the ToyRedox subsystem) --
@@ -362,24 +414,25 @@ let tspan = (0.0, 5.0), opts = (dt = 0.05, adaptive = false)
 end
 
 # =====================================================================================
-# TARGET API — patterns the taxonomy needs but CytoZoo cannot express yet.
-# These are executable specs: the exact calls we WANT, plus what CytoZoo must add.
+# TARGET API — patterns the taxonomy might still want. Every socket in the map is now live; what
+# is left is an alternative SPELLING, not a missing capability.
 # =====================================================================================
 #
-# ── socket 5 — feedback additive contributed-flux into a shared derivative ───────────────────
-#   The redox module's flux J = gJ·z (redox_flux_J) must be ADDED into D's w equation:
-#   dw = Pw - Lw·w + J.  `share` is hard-discard (owner's equation wins entirely; the non-owner's
-#   is zeroed via `frozen`) and `connect` writes into a *parameter* slot, not a *derivative* — so
-#   neither can sum a non-owner flux into an owner's dU. This is THE feedback gap (ECCMitoRedox §6:
-#   NADH += −V_THD, ΔΨm += +V_IMAC). Two candidate spellings to decide between:
+# ── flux injection — a second spelling for socket 5 ──────────────────────────────────────────
+#   Socket 5 ships as a contributory share: the contributing module carries the term as a state
+#   (`w_flux`) whose derivative is the flux, and `op = +` sums it into the owner's slot.
 #
-#       # (a) additive share — Redox exposes a local `w_flux` state whose derivative sums into the slot
 #       share(:D => :w, :Redox => :w_flux; owner = :D, op = +)
 #
-#       # (b) flux injection — a new edge kind adding a named derived flux into an owner's derivative
+#   The alternative was a new edge kind sourcing a named DERIVED flux instead:
+#
 #       inject(:Redox => :J, :D => :w)
 #
-#   Needed in CytoZoo: an accumulate-into-owner's-dU path in `_run!` (src/coupling.jl), a
-#   contributory alternative to today's `frozen`-index zeroing.
+#   It was not built, and the reasons are worth keeping. A monitor source is resolved in the
+#   pre-pass, so (1) the sourcing component may not itself receive a `connect` edge — which the
+#   real consumer does, to read its driver's observables — and (2) monitor values pass through
+#   `_connect_value`, which extracts the primal of a `Dual`, so an injected flux would silently
+#   vanish from every derivative. A share never leaves `U` and has neither problem. Revisit only
+#   for a module that genuinely cannot carry the term as a state.
 
-println("\nAll live demonstrations passed. See the TARGET API section for the API backlog.")
+println("\nAll live demonstrations passed, including socket 5. The socket map has no ❌ rows left.")
