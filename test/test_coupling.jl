@@ -805,3 +805,113 @@ end
         [connect(:S => :c, :N => :in)],
     )
 end
+
+# --- gain: one quantity, two bases -----------------------------------------------------------
+#
+# `gain` rescales what the NON-OWNER reads from a shared slot; its derivative contribution is
+# added unscaled. The asymmetry is the whole design, so it is asserted directly rather than
+# inferred from a trajectory.
+
+@testset "couple — gained share scales the reader, not the contribution" begin
+    # J reads the shared v (du[2] = u[1]) and contributes a CONSTANT 20.0 into it, so the two
+    # halves of the semantics are separable in one evaluation.
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoJ(); name = :J)]
+    cm = couple(nodes, [share(:P => :v, :J => :v; owner = :P, op = +, gain = 0.1)])
+
+    vslot = state_index(cm, :v)
+    U = default_initial_state(cm)
+    U0 = copy(U)
+    dU = similar(U)
+    fill!(dU, 1.0e6)
+    cm(dU, U, nothing, 0.0)
+
+    @test dU[state_index(cm, :J_j)] == 0.1 * 10.0        # the reader sees the RESCALED slot
+    @test dU[vslot] == -_MONO_K * (10.0 - 1.0) + 20.0    # owner's own frame; contribution unscaled
+    @test U == U0                                        # U is restored bit-for-bit
+
+    cm(dU, U, nothing, 0.0)                              # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0      # save/scale/restore stays allocation-free
+end
+
+@testset "couple — a state-dependent contribution is scaled on input only" begin
+    # _MonoJState contributes -3v. With gain = 0.1 it reads 0.1*10 = 1.0 and contributes -3.0 —
+    # NOT -3.0/0.1. This is the line between `gain` and a change of variables.
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoJState(); name = :J)]
+    cm = couple(nodes, [share(:P => :v, :J => :v; owner = :P, op = +, gain = 0.1)])
+
+    U = default_initial_state(cm)
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test dU[state_index(cm, :v)] == -_MONO_K * (10.0 - 1.0) + (-3.0 * 0.1 * 10.0)
+end
+
+@testset "couple — gain applies to a hard-discard member too" begin
+    # Q's own derivative for v is discarded either way; what gain changes is the value its OTHER
+    # equation reads (du[2] = u[1] - u[2]).
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoQ(); name = :Q)]
+    cm = couple(nodes, [share(:P => :v, :Q => :v; owner = :P, gain = 0.5)])
+
+    U = default_initial_state(cm)
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test dU[state_index(cm, :Q_w)] == 0.5 * 10.0 - 0.0
+    @test dU[state_index(cm, :v)] == -_MONO_K * (10.0 - 1.0)   # owner untouched by the gain
+end
+
+@testset "couple — gain = 1 is structurally inert" begin
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoJ(); name = :J)]
+    plain = couple(nodes, [share(:P => :v, :J => :v; owner = :P, op = +)])
+    unit = couple(nodes, [share(:P => :v, :J => :v; owner = :P, op = +, gain = 1)])
+    for cm in (plain, unit)
+        @test all(e -> e.gained == (), cm.plan)   # no gained slots recorded, so the walk is identical
+    end
+end
+
+@testset "couple — gained share survives ForwardDiff" begin
+    # A gain flows through U like the rest of a share, so the coupling term must stay in the
+    # Jacobian rather than being frozen to its primal the way a connect input is.
+    nodes = [Subsystem(_MonoP(); name = :P), Subsystem(_MonoJState(); name = :J)]
+    cm = couple(nodes, [share(:P => :v, :J => :v; owner = :P, op = +, gain = 0.1)])
+    vslot = state_index(cm, :v)
+
+    f = function (u)
+        du = similar(u)
+        cm(du, u, nothing, 0.0)
+        return du
+    end
+    J = ForwardDiff.jacobian(f, default_initial_state(cm))
+    # ∂/∂v of [owner's -K(v-a)] + [contributed -3·(gain·v)] = -K - 3·gain
+    @test J[vslot, vslot] ≈ -_MONO_K - 3.0 * 0.1
+end
+
+@testset "couple — connect gain scales the staged value" begin
+    nodes = [Subsystem(_MonoA(); name = :S), Subsystem(_MonoReader(); name = :R)]
+    cm = couple(nodes, [connect(:S => :d, :R => :d_ext; gain = 3.0)])
+
+    U = default_initial_state(cm)      # S's d starts at 1.0
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test dU[state_index(cm, :R_acc)] == 3.0 * 1.0
+end
+
+@testset "couple — gain validation" begin
+    # A gain multiplies on every evaluation, so a degenerate one is rejected at build time.
+    for bad in (0, 0.0, Inf, -Inf, NaN)
+        @test_throws ArgumentError share(:A => :b, :B => :x; owner = :A, gain = bad)
+        @test_throws ArgumentError connect(:A => :b, :B => :in; gain = bad)
+    end
+    @test_throws ArgumentError share(:A => :b, :B => :x; owner = :A, gain = :nope)
+
+    # One state reads the shared slot through exactly one scaling; two edges disagreeing is a
+    # contradiction, not a last-wins.
+    @test_throws ArgumentError couple(
+        [
+            Subsystem(_MonoP(); name = :P), Subsystem(_MonoJ(); name = :J),
+            Subsystem(_MonoJ2(); name = :J2),
+        ],
+        [
+            share(:P => :v, :J => :v; owner = :P, op = +, gain = 0.1),
+            share(:J2 => :v, :J => :v; owner = :J2, op = +, gain = 0.5),
+        ],
+    )
+end

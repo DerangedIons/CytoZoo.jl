@@ -79,13 +79,15 @@ inlines. Each entry carries:
   component is a hard-discard non-owner of that shared slot,
 - its **accumulated indices** — the local positions belonging to a class shared with `op = +`,
   saved before the component runs and added back after,
+- its **gained indices** — `(local position, gain)` pairs for shared states the component reads
+  through a scaling, saved and rescaled around the component and then restored,
 - its **connect plan**, partitioned into homogeneous overwrite and add lists, once for
   state-sourced edges and again for monitor-sourced ones.
 
 Partitioning the connects by source kind and operation at construction is what keeps the staging
-write free of dynamic dispatch: each list is a homogeneous tuple of `(index, dst_param)` pairs
-processed by one concrete code path. State indices point into `U`, monitor indices into the
-coupling's flat monitor scratch.
+write free of dynamic dispatch: each list is a homogeneous tuple of
+`(index, dst_param, gain)` triples processed by one concrete code path. State indices point into
+`U`, monitor indices into the coupling's flat monitor scratch.
 
 Alongside the plan, `couple` builds a **monitor pre-pass**: one entry per component that sources
 at least one monitor, carrying that component's state block and its slice of the scratch. A
@@ -108,13 +110,23 @@ Then, for every component in `operator_order`:
    `U` rather than a cached buffer, the receiver always sees the current value.
 2. **Save the accumulating slots** this component is about to overwrite, into an `NTuple` in
    `eltype(dU)` — a stack temporary, so a `Dual` stays a `Dual`.
-3. **Run the component**, with each submodel writing into a `view` of the shared `dU` and
+3. **Apply any gains**, saving each gained slot's value in `U` and multiplying in place, so the
+   component's zero-copy view shows the rescaled quantity while every other component keeps
+   seeing the owner's frame. This has to bracket the component call and nothing else: staging in
+   step 1 reads each source in its *own* component's frame.
+4. **Run the component**, with each submodel writing into a `view` of the shared `dU` and
    reading a `view` of the shared `U`. A submodel therefore needs no awareness that it is
    coupled — it sees ordinary contiguous state and derivative vectors.
-4. **Zero the frozen entries** of `dU`, discarding the hard-discard non-owner's contribution to
+5. **Restore the gained slots** from the saved values — the saved value, not a division, so `U`
+   comes back bit-identical.
+6. **Zero the frozen entries** of `dU`, discarding the hard-discard non-owner's contribution to
    any shared slot.
-5. **Add the saved values back**, turning the component's wholesale write of its `du` view into
+7. **Add the saved values back**, turning the component's wholesale write of its `du` view into
    an accumulation.
+
+Only `U` is rescaled, never `dU`: a `gain` converts an input, so a contributor's derivative
+reaches the owner's slot unscaled. See [Share Edges](../guides/coupling/share.md) for why that
+asymmetry is the right default.
 
 The pre-pass running before all staging is why a monitor source may not also *receive* a connect
 edge: its monitors would be computed from parameters staged on the previous evaluation. `couple`

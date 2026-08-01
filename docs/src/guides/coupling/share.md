@@ -238,6 +238,38 @@ Two things to know before using it: the contributor's initial value being droppe
 requirement that a component fully *write* its own `du` rather than accumulate into it. Both are
 in [Limitations](limitations.md).
 
+## `gain` — One Quantity, Two Bases
+
+Two models often mean the same physical quantity but express it on different bases: a matrix
+volume against a whole-cell volume, mM against µM, a pool normalised differently. A share
+asserts the two states *are* one variable, and `gain` is where that conversion lives.
+
+```julia
+# The host cell carries NADH on a 10 mM whole-cell pool; the mitochondrial model's kinetics
+# are written against its own 1 mM matrix pool.
+share(:Cell => :NADH, :Mito => :NADHm; owner = :Cell, op = +, gain = 1/10)
+```
+
+**The non-owner reads `gain * slot`. The owner reads the slot untouched.**
+
+**A contributor's derivative is added unscaled.** `gain` converts an input, not a flux. That
+asymmetry is deliberate: in practice the two bases differ by a pool normalisation rather than a
+unit conversion, and the contributed flux is already in the owner's frame — the contributing
+model computes it from rate constants that were fitted there. If you want a true change of
+variables, with the contribution scaled by `1/gain` as well, express it in the contributing
+model. One keyword cannot mean both, and quietly choosing one would corrupt a calibrated
+coupling without failing.
+
+A gain belongs to the edge's non-owner *endpoint*, exactly as `op` does, so every edge naming
+that endpoint must declare the same gain — a state reads its slot through one scaling or the
+build fails. `gain` must be finite and non-zero; to carry nothing across an edge, omit the edge.
+
+`gain = 1` is the default and costs nothing: no gained slots are recorded and the
+save/scale/restore compiles away.
+
+Unlike a [`connect`](connect.md) input, a gained share still flows through the global state
+vector, so the coupling term survives in the Jacobian under ForwardDiff.
+
 ## See Also
 
 - [Connect Edges](connect.md) — the other edge kind.

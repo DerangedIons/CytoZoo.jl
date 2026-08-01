@@ -32,9 +32,10 @@ One `share` edge: state `a_state` of component `a` and state `b_state` of compon
 the same physical quantity, sharing a single global state slot. `owner` (`a` or `b`) supplies
 the governing equation, the canonical name and the initial value. `op` says what becomes of the
 **non-owner's** derivative: [`overwrite`](@ref) (the default) discards it, `+` adds it to the
-owner's. Build with [`share`](@ref).
+owner's. `gain` rescales what the non-owner *reads* from the slot (1 = unscaled). Build with
+[`share`](@ref).
 """
-struct ShareSpec{OP}
+struct ShareSpec{OP, G}
     a::Symbol
     a_state::Symbol
     b::Symbol
@@ -42,10 +43,11 @@ struct ShareSpec{OP}
     owner::Symbol
     name::Symbol
     op::OP
+    gain::G
 end
 
 """
-    share(a => :state_a, b => :state_b; owner, name = <owner's state>, op = overwrite)
+    share(a => :state_a, b => :state_b; owner, name = <owner's state>, op = overwrite, gain = 1)
 
 Declare that `state_a` of component `a` and `state_b` of component `b` are the **same**
 quantity (one shared global slot). `a` and `b` are subsystem names (see [`Subsystem`](@ref)).
@@ -90,11 +92,32 @@ is ignored, exactly as a hard-discard non-owner's is.
 Because a share flows entirely through the global state vector `U`, it is unaffected by the
 automatic-differentiation caveat that applies to [`connect`](@ref) edges — contributory shares
 included.
+
+## `gain` — one quantity, two bases
+
+`gain` handles the case where both models mean the same physical quantity but express it on
+different bases (a matrix-volume vs whole-cell concentration, mM vs µM, a pool normalised
+differently). The **non-owner reads `gain * slot`**; the owner reads the slot untouched:
+
+```julia
+# G's NADH is on a 10 mM whole-cell pool, K's on a 1 mM matrix pool.
+share(:G => :NADH, :K => :NADHm; owner = :G, op = +, gain = 1/10)
+```
+
+**A contributor's derivative is added UNSCALED.** `gain` converts an input, not a flux. This is
+asymmetric on purpose: the two bases usually differ by a pool normalisation rather than a unit
+conversion, and the contributed flux is already expressed in the owner's frame — the receiving
+model computes it from constants that were fitted in the owner's units. If you want a true
+change of variables (contribution scaled by `1/gain` as well), do it in the contributing model;
+a single keyword cannot mean both, and silently picking one would corrupt a calibrated coupling.
+
+A gain is a property of the edge's non-owner endpoint, so every edge naming that endpoint must
+agree on it. `gain = 1` (the default) costs nothing: the save/scale/restore compiles away.
 """
 function share(
         a_pair::Pair{Symbol, Symbol}, b_pair::Pair{Symbol, Symbol};
         owner::Symbol, name::Symbol = owner === a_pair.first ? a_pair.second : b_pair.second,
-        op = overwrite
+        op = overwrite, gain = 1
     )
     a, a_state = a_pair
     b, b_state = b_pair
@@ -105,7 +128,22 @@ function share(
                 "discarded) or `+` (the non-owner's derivative is added to the owner's); got $op"
         )
     )
-    return ShareSpec(a, a_state, b, b_state, owner, name, op)
+    _check_gain("share", gain)
+    return ShareSpec(a, a_state, b, b_state, owner, name, op, gain)
+end
+
+# A gain multiplies a state on every evaluation, so a non-finite one poisons the whole
+# trajectory, and zero silently pins the reader's view to 0.0 — a coupling that looks wired and
+# transmits nothing. Both are rejected at build time rather than debugged at solve time.
+function _check_gain(what::String, gain)
+    gain isa Number || throw(ArgumentError("$what: gain must be a number, got $(typeof(gain))"))
+    (isfinite(gain) && !iszero(gain)) || throw(
+        ArgumentError(
+            "$what: gain must be finite and non-zero (it rescales a value on every evaluation); " *
+                "got $gain. To carry nothing across an edge, omit the edge."
+        )
+    )
+    return nothing
 end
 
 """
@@ -124,20 +162,21 @@ overwrite(_old, new) = new
 
 One `connect` edge: a directed dataflow link. Before component `dst` steps, the value of
 `src`'s observable `src_state` — a **state** (read from the global state vector) or a
-**monitor** (recomputed from state each evaluation) — is combined into `dst`'s parameter slot
-`dst_slot` via the operation `op` (default [`overwrite`](@ref), i.e. copy). Build with
-[`connect`](@ref).
+**monitor** (recomputed from state each evaluation) — is scaled by `gain` and combined into
+`dst`'s parameter slot `dst_slot` via the operation `op` (default [`overwrite`](@ref), i.e.
+copy). Build with [`connect`](@ref).
 """
-struct ConnectSpec{OP}
+struct ConnectSpec{OP, G}
     src::Symbol
     src_state::Symbol
     dst::Symbol
     dst_slot::Symbol
     op::OP
+    gain::G
 end
 
 """
-    connect(src => :observable, dst => :param_slot; op = overwrite)
+    connect(src => :observable, dst => :param_slot; op = overwrite, gain = 1)
 
 Declare a directed dataflow edge so component `dst` reads `src`'s `observable` through its
 parameter slot `param_slot`. `src` and `dst` are subsystem names.
@@ -182,14 +221,30 @@ approximate Jacobian that omits the coupling term. Two consequences:
   incorrect — not merely inexact.
 
 `share` is unaffected on both counts, since it flows through the state vector `U`.
+
+`gain` rescales the source value before it enters the slot — the unit/basis conversion a
+socket needs when the two models express the quantity differently, kept at the edge rather than
+restated inside either model:
+
+```julia
+# G's whole-cell respiration drives K's matrix-basis ROS shunt (ρ density ratio 0.018/0.1).
+connect(:G => :V_O2, :K => :VNO_ext; gain = 0.18)
+```
+
+With `op = +` each edge is scaled by its own gain before the sum. `gain = 1` (the default) is
+free.
 """
-function connect(src_pair::Pair{Symbol, Symbol}, dst_pair::Pair{Symbol, Symbol}; op = overwrite)
+function connect(
+        src_pair::Pair{Symbol, Symbol}, dst_pair::Pair{Symbol, Symbol};
+        op = overwrite, gain = 1
+    )
     op in (overwrite, +) || throw(
         ArgumentError(
             "connect: op must be `overwrite` (copy) or `+` (sum into the slot); got $op"
         )
     )
-    return ConnectSpec(src_pair.first, src_pair.second, dst_pair.first, dst_pair.second, op)
+    _check_gain("connect", gain)
+    return ConnectSpec(src_pair.first, src_pair.second, dst_pair.first, dst_pair.second, op, gain)
 end
 
 """
@@ -260,10 +315,10 @@ function couple(nodes, edges = ())
     shares, connects = _split_edges(edges)
     _validate_specs(components, shares, connects)
     components = _copy_connect_receivers(components, connects)
-    parent, classes, additive = _share_classes(shares)
+    parent, classes, additive, gains = _share_classes(shares)
     layout = _compute_layout(components, parent, classes)
     monitor_plan, monitor_offsets, num_mon = _build_monitor_plan(components, connects, layout)
-    plan = _build_plan(components, parent, classes, additive, connects, layout, monitor_offsets)
+    plan = _build_plan(components, parent, classes, additive, gains, connects, layout, monitor_offsets)
     additive_slots = _accumulating_slots(plan)
     T = eltype(layout.u0)
     monitor_scratch = zeros(T, num_mon)
@@ -503,6 +558,7 @@ function _share_classes(shares::Tuple)
     # rather than by check.
     additive = Set{StateKey}()
     hard = Set{StateKey}()
+    gains = Dict{StateKey, Any}()
     for sh in shares
         other = sh.owner === sh.a ? (sh.b, sh.b_state) : (sh.a, sh.a_state)
         push!(sh.op === (+) ? additive : hard, other)
@@ -514,6 +570,19 @@ function _share_classes(shares::Tuple)
                     "same op."
             ),
         )
+        # A gain rescales what THIS endpoint reads, so like `op` it is a property of the endpoint
+        # rather than of the edge. Two edges fanning into one non-owner state with different gains
+        # would be a contradiction (one slot, two readings), so they are rejected here rather than
+        # resolved last-wins.
+        prev_gain = get(gains, other, nothing)
+        prev_gain === nothing || prev_gain == sh.gain || throw(
+            ArgumentError(
+                "share endpoint :$(other[1]).:$(other[2]) is declared with two different gains " *
+                    "($prev_gain and $(sh.gain)); a state reads the shared slot through exactly " *
+                    "one scaling. Give every edge naming it the same gain."
+            ),
+        )
+        isone(sh.gain) || (gains[other] = sh.gain)
     end
 
     classes = Dict{StateKey, ShareClass}()
@@ -542,7 +611,7 @@ function _share_classes(shares::Tuple)
     end
 
     _check_one_state_per_class(shares, parent)
-    return parent, classes, additive
+    return parent, classes, additive, gains
 end
 
 # A component may contribute at most one state to a class. Two of its states in one class collapse
@@ -696,18 +765,21 @@ One component's pre-resolved execution entry in a [`CoupledModel`](@ref)'s monol
 index vector); `frozen` are local indices of shared states it neither owns nor contributes to
 (zeroed after its functor, so the owner's write wins); `accumulated` are local indices belonging
 to an accumulating class — saved before the functor and added back after, so contributions sum
-whatever the operator order; `overwrites`/`adds` are state-sourced connect edges resolved to
-`(src_global_index, dst_param_index)`, and `monitor_overwrites`/`monitor_adds` the
-monitor-sourced ones resolved to `(monitor_scratch_index, dst_param_index)`; `params` is the
-receiver's `writable_parameters` vector (a private deepcopy made by `couple`, so staging never
-mutates the caller's model), or `nothing` when it has no incoming connect edges.
+whatever the operator order; `gained` are `(local_index, gain)` pairs for shared states this
+component reads through a scaling — saved, scaled and restored around the functor;
+`overwrites`/`adds` are state-sourced connect edges resolved to
+`(src_global_index, dst_param_index, gain)`, and `monitor_overwrites`/`monitor_adds` the
+monitor-sourced ones resolved to `(monitor_scratch_index, dst_param_index, gain)`; `params` is
+the receiver's `writable_parameters` vector (a private deepcopy made by `couple`, so staging
+never mutates the caller's model), or `nothing` when it has no incoming connect edges.
 """
-struct CompEntry{M, B, P, F, AC, OW, AD, MOW, MAD}
+struct CompEntry{M, B, P, F, AC, GN, OW, AD, MOW, MAD}
     model::M
     block::B
     params::P
     frozen::F
     accumulated::AC
+    gained::GN
     overwrites::OW
     adds::AD
     monitor_overwrites::MOW
@@ -735,14 +807,14 @@ _connect_value(x) = x
 
 # Build a concretely-typed tuple of entries in operator order (recursion keeps element types
 # concrete → the functor specializes and stays allocation-free on the contiguous-block case).
-_build_plan(components, parent, classes, additive, connects, layout, mon_offsets) =
-    _entries(components, parent, classes, additive, connects, layout, mon_offsets, layout.operator_order, 1)
+_build_plan(components, parent, classes, additive, gains, connects, layout, mon_offsets) =
+    _entries(components, parent, classes, additive, gains, connects, layout, mon_offsets, layout.operator_order, 1)
 
-_entries(components, parent, classes, additive, connects, layout, mon_offsets, order, i) =
+_entries(components, parent, classes, additive, gains, connects, layout, mon_offsets, order, i) =
     i > length(order) ? () :
     (
-        _entry(components, parent, classes, additive, connects, layout, mon_offsets, order[i]),
-        _entries(components, parent, classes, additive, connects, layout, mon_offsets, order, i + 1)...,
+        _entry(components, parent, classes, additive, gains, connects, layout, mon_offsets, order[i]),
+        _entries(components, parent, classes, additive, gains, connects, layout, mon_offsets, order, i + 1)...,
     )
 
 # The component's slice of the global state: a UnitRange when contiguous (fast view), else the
@@ -750,13 +822,14 @@ _entries(components, parent, classes, additive, connects, layout, mon_offsets, o
 # type parameter, so the functor stays specialized.
 _block(idxs) = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
 
-function _entry(components, parent, classes, additive, connects, layout, mon_offsets, ck)
+function _entry(components, parent, classes, additive, gains, connects, layout, mon_offsets, ck)
     si = layout.solution_indices
     frozen = _frozen_indices(components, parent, classes, additive, ck)
     accumulated = _accumulated_indices(components, parent, classes, ck)
+    gained = _gained_indices(components, gains, ck)
     ow_l, ad_l, mow_l, mad_l = _connect_plan(components, connects, ck)
-    toglobal(e) = (si[e[1]][e[2]], e[3])        # (src, src_local, dst_param) -> (src_global, dst_param)
-    tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3])   # -> (monitor_scratch_index, dst_param)
+    toglobal(e) = (si[e[1]][e[2]], e[3], e[4])  # (src, src_local, dst_param, gain) -> (src_global, …)
+    tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3], e[4])   # -> (monitor_scratch_index, …)
     overwrites = map(toglobal, ow_l) |> Tuple
     adds = map(toglobal, ad_l) |> Tuple
     monitor_overwrites = map(tomonitor, mow_l) |> Tuple
@@ -764,7 +837,7 @@ function _entry(components, parent, classes, additive, connects, layout, mon_off
     has_edges = !(isempty(ow_l) && isempty(ad_l) && isempty(mow_l) && isempty(mad_l))
     params = has_edges ? writable_parameters(components[ck]) : nothing
     return CompEntry(
-        components[ck], _block(si[ck]), params, frozen, accumulated,
+        components[ck], _block(si[ck]), params, frozen, accumulated, gained,
         overwrites, adds, monitor_overwrites, monitor_adds,
     )
 end
@@ -840,12 +913,40 @@ function _run!(dU, U, p, t, plan, mon)
     e = first(plan)
     _connect!(U, mon, e.params, e.overwrites, e.adds, e.monitor_overwrites, e.monitor_adds)
     saved = _save_accumulated(dU, e.block, e.accumulated)
+    # `gain` is applied to U in place and undone immediately, so the component's zero-copy view
+    # shows the rescaled value while every other component keeps seeing the owner's frame. It has
+    # to bracket the model call and nothing else: `_connect!` above reads sources in their OWN
+    # component's frame, and the `frozen`/`_add_back!` steps below touch dU only.
+    saved_u = _save_gained(U, e.block, e.gained)
+    _scale_gained!(U, e.block, e.gained)
     e.model(view(dU, e.block), view(U, e.block), p, t)
+    _restore_gained!(U, e.block, e.gained, saved_u)
     @inbounds for i in e.frozen
         dU[e.block[i]] = zero(eltype(dU))
     end
     _add_back!(dU, e.block, e.accumulated, saved)
     return _run!(dU, U, p, t, Base.tail(plan), mon)
+end
+
+# Save / scale / restore for gained shared slots. Restoring the SAVED value rather than dividing
+# back keeps `U` bit-identical across the call — a round trip through `*g` then `/g` would not.
+# Same `NTuple`-of-`eltype(U)` stack temporary as `_save_accumulated`, so a `Dual` stays a `Dual`
+# and a gained share keeps `share`'s AD advantage over `connect`.
+_save_gained(U, block, ::Tuple{}) = ()
+@inline _save_gained(U, block, gained::Tuple) =
+    map(g -> (@inbounds U[block[first(g)]]), gained)
+
+_scale_gained!(U, block, ::Tuple{}) = nothing
+@inline function _scale_gained!(U, block, gained::Tuple)
+    g = first(gained)
+    @inbounds U[block[first(g)]] *= last(g)
+    return _scale_gained!(U, block, Base.tail(gained))
+end
+
+_restore_gained!(U, block, ::Tuple{}, ::Tuple{}) = nothing
+@inline function _restore_gained!(U, block, gained::Tuple, saved::Tuple)
+    @inbounds U[block[first(first(gained))]] = first(saved)
+    return _restore_gained!(U, block, Base.tail(gained), Base.tail(saved))
 end
 
 # `dU` arrives dirty — the solver does not zero it — so every accumulating slot is reset once,
@@ -882,23 +983,23 @@ end
 _connect!(U, mon, ::Nothing, ::Tuple{}, ::Tuple{}, ::Tuple{}, ::Tuple{}) = nothing
 function _connect!(U, mon, params, overwrites, adds, monitor_overwrites, monitor_adds)
     @inbounds begin
-        for (_, d) in adds
+        for (_, d, _) in adds
             params[d] = zero(eltype(params))
         end
-        for (_, d) in monitor_adds
+        for (_, d, _) in monitor_adds
             params[d] = zero(eltype(params))
         end
-        for (s, d) in overwrites
-            params[d] = _connect_value(U[s])
+        for (s, d, g) in overwrites
+            params[d] = g * _connect_value(U[s])
         end
-        for (s, d) in monitor_overwrites
-            params[d] = mon[s]
+        for (s, d, g) in monitor_overwrites
+            params[d] = g * mon[s]
         end
-        for (s, d) in adds
-            params[d] += _connect_value(U[s])
+        for (s, d, g) in adds
+            params[d] += g * _connect_value(U[s])
         end
-        for (s, d) in monitor_adds
-            params[d] += mon[s]
+        for (s, d, g) in monitor_adds
+            params[d] += g * mon[s]
         end
     end
     return nothing
@@ -1002,20 +1103,34 @@ function _accumulated_indices(components::NamedTuple, parent, classes, ck::Symbo
     return Tuple(accumulated)
 end
 
+# Local `(index, gain)` pairs for shared states `ck` reads through a scaling. Only non-owner
+# endpoints appear (the owner reads its own slot in its own frame), and only where the gain is
+# not 1 — `_share_classes` never records a unit gain, so an ordinary coupling gets `()` here and
+# the save/scale/restore in `_run!` compiles away entirely.
+function _gained_indices(components::NamedTuple, gains, ck::Symbol)
+    pairs = Tuple{Int, Any}[]
+    for (li, sname) in enumerate(state_names(components[ck]))
+        g = get(gains, (ck, sname), nothing)
+        g === nothing && continue
+        push!(pairs, (li, g))
+    end
+    return Tuple((li, g) for (li, g) in pairs)
+end
+
 # Resolve the connect edges targeting `ck` into four vectors of
 # (src::Symbol, src_local::Int, dst_param::Int) tuples, partitioned by source kind and then by op.
 # The source is named as (component, local index); `_entry` maps a state local index to a
 # global-state index via `solution_indices` and a monitor local index to a monitor-scratch index
 # via the offsets map. Partitioning up front keeps every per-eval write homogeneous (no dispatch).
 function _connect_plan(components::NamedTuple, connects::Tuple, ck::Symbol)
-    overwrites = Tuple{Symbol, Int, Int}[]
-    adds = Tuple{Symbol, Int, Int}[]
-    monitor_overwrites = Tuple{Symbol, Int, Int}[]
-    monitor_adds = Tuple{Symbol, Int, Int}[]
+    overwrites = Tuple{Symbol, Int, Int, Any}[]
+    adds = Tuple{Symbol, Int, Int, Any}[]
+    monitor_overwrites = Tuple{Symbol, Int, Int, Any}[]
+    monitor_adds = Tuple{Symbol, Int, Int, Any}[]
     for cn in connects
         cn.dst === ck || continue
         kind, local_index = _resolve_source(components[cn.src], cn.src, cn.src_state)
-        entry = (cn.src, local_index, parameter_index(components[ck], cn.dst_slot))
+        entry = (cn.src, local_index, parameter_index(components[ck], cn.dst_slot), cn.gain)
         if kind === :monitor
             cn.op === (+) ? push!(monitor_adds, entry) : push!(monitor_overwrites, entry)
         else
