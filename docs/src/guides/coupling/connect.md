@@ -214,6 +214,22 @@ r.parameters[1]     # still 0.0 — your instance was not touched
 The flip side is that a single `CoupledModel` owns mutable scratch, so it is **not safe to
 solve concurrently from several threads**. See [Limitations](limitations.md).
 
+## Scaling a Socket with `gain`
+
+A socket often needs a unit or basis conversion — the two models agree on what the quantity
+*is* and disagree on how it is expressed. `gain` keeps that conversion at the edge instead of
+restating it inside either model:
+
+```julia
+# The host's whole-cell respiration drives the mitochondrial model's matrix-basis ROS shunt;
+# 0.18 is the respiratory-complex density ratio between the two frames.
+connect(:Cell => :V_O2, :Mito => :VNO_ext; gain = 0.18)
+```
+
+The source value is scaled before it enters the slot. With `op = +`, each edge is scaled by its
+own gain and then summed. `gain` must be finite and non-zero; `gain = 1` is the default and is
+free.
+
 ## Two Serious Caveats
 
 Before using `connect` in anger, read [Limitations](limitations.md). In brief:
