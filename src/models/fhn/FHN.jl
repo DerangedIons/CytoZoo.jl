@@ -25,9 +25,6 @@ FHNModel(; a = 0.15)                  # override one parameter
 FHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
 ```
 
-[`ParametrizedFHNModel`](@ref) is an alias of this type, matching the name Thunderbolt
-gives the same model; the two are interchangeable.
-
 # Parameters
 
 | Name | Default | Meaning |
@@ -63,16 +60,6 @@ struct FHNModel{T <: Number, S} <: AbstractCardiacCellModel
     e::T
     stim::S
 end
-
-"""
-    ParametrizedFHNModel
-
-Alias of [`FHNModel`](@ref), matching the name Thunderbolt gives the same model.
-`ParametrizedFHNModel === FHNModel`, so the two are interchangeable everywhere —
-including as constructors. It exists so code written against Thunderbolt's spelling
-needs no translation.
-"""
-const ParametrizedFHNModel = FHNModel
 
 FHNModel(; kwargs...) = FHNModel(Float64; kwargs...)
 

@@ -93,7 +93,6 @@ overwrite
 ```@docs
 ToRORd
 FHNModel
-ParametrizedFHNModel
 ```
 
 ## Extensions

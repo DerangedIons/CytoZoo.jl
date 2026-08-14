@@ -142,10 +142,6 @@ FHNModel(; a = 0.15)                  # override one parameter
 FHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
 ```
 
-[`ParametrizedFHNModel`](@ref) is an alias of the same type, matching the name Thunderbolt
-gives this model. `ParametrizedFHNModel === FHNModel`, so either name works anywhere — in
-constructors, signatures, and `isa` tests alike.
-
 #### Parameters
 
 ```@example models_fhn

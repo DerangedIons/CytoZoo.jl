@@ -1,7 +1,7 @@
 using OrdinaryDiffEq
 
 @testset "FHN — interface compliance" begin
-    model = ParametrizedFHNModel()
+    model = FHNModel()
 
     @test num_states(model) == 2
     @test num_parameters(model) == 5
@@ -29,15 +29,11 @@ using OrdinaryDiffEq
 end
 
 @testset "FHN — constructors and defaults" begin
-    # `ParametrizedFHNModel` is Thunderbolt's spelling of the same type, not a second one.
-    # Every construction below therefore exercises both names at once.
-    @test ParametrizedFHNModel === FHNModel
-
-    m = ParametrizedFHNModel()
+    m = FHNModel()
     @test (m.a, m.b, m.c, m.d, m.e) == (0.1, 0.5, 1.0, 0.0, 0.01)
     @test m isa FHNModel{Float64}
 
-    m32 = ParametrizedFHNModel(Float32)
+    m32 = FHNModel(Float32)
     @test m32.a isa Float32
     @test m32.e isa Float32
     @test eltype(default_initial_state(m32)) == Float32
@@ -45,7 +41,7 @@ end
     @test !(m32 isa FHNModel{Float64})     # ...so the eltype claim needs the parameter
 
     # Per-parameter overrides keep the rest at their defaults and promote to T.
-    mk = ParametrizedFHNModel(; a = 0.25, e = 1 // 200)
+    mk = FHNModel(; a = 0.25, e = 1 // 200)
     @test mk.a == 0.25
     @test mk.e == 0.005
     @test mk.b == 0.5
@@ -58,17 +54,17 @@ end
     # `FunctionStimulus` is isbits *iff* its function is, which is the contract its
     # docstring states. A non-capturing closure is a singleton type, so it stays isbits
     # and can still ride into a GPU kernel...
-    @test isbitstype(typeof(ParametrizedFHNModel(; stim = FunctionStimulus((x, t) -> 0.0))))
+    @test isbitstype(typeof(FHNModel(; stim = FunctionStimulus((x, t) -> 0.0))))
 
     # ...while one that closes over heap data is the CPU-only escape hatch.
     waveform = [0.0, -0.5]
     @test !isbitstype(
-        typeof(ParametrizedFHNModel(; stim = FunctionStimulus((x, t) -> waveform[1]))),
+        typeof(FHNModel(; stim = FunctionStimulus((x, t) -> waveform[1]))),
     )
 end
 
 @testset "FHN — resting state is a genuine fixed point" begin
-    model = ParametrizedFHNModel()
+    model = FHNModel()
     u = default_initial_state(model)
     du = fill(NaN, 2)
 
@@ -80,7 +76,7 @@ end
 end
 
 @testset "FHN — cubic threshold behaviour" begin
-    model = ParametrizedFHNModel()          # a = 0.1
+    model = FHNModel()          # a = 0.1
     du = fill(NaN, 2)
 
     # Below threshold the cubic pulls v back down; above it, v runs away to the upper
@@ -100,7 +96,7 @@ end
 end
 
 @testset "FHN — recovery equation" begin
-    model = ParametrizedFHNModel(; b = 0.5, c = 1.0, d = 0.2, e = 0.01)
+    model = FHNModel(; b = 0.5, c = 1.0, d = 0.2, e = 0.01)
     du = fill(NaN, 2)
     v, s = 0.8, 0.3
 
@@ -113,7 +109,7 @@ end
 @testset "FHN — stimulus sign convention" begin
     # Negative amplitude depolarizes, matching ToRORd and the rest of the zoo.
     stim = Stimulus(; amplitude = -0.5, period = 100.0, duration = 1.0, start = 0.0)
-    model = ParametrizedFHNModel(; stim)
+    model = FHNModel(; stim)
     u = default_initial_state(model)
     du = fill(NaN, 2)
 
@@ -125,7 +121,7 @@ end
 
     # And the default model is quiet at every phase of the default period — a tissue
     # framework owns stimulation, so a nonzero default would double-stimulate.
-    quiet = ParametrizedFHNModel()
+    quiet = FHNModel()
     for t in (0.0, 0.5, 1.5, 500.0, 1000.0)
         quiet(du, u, nothing, t)
         @test du[1] == 0.0
@@ -133,7 +129,7 @@ end
 end
 
 @testset "FHN — SpatialContext overrides" begin
-    model = ParametrizedFHNModel()
+    model = FHNModel()
     du_plain = fill(NaN, 2)
     du_spatial = fill(NaN, 2)
     u = [0.15, 0.0]
@@ -168,7 +164,7 @@ end
 end
 
 @testset "FHN — Float32 genericity" begin
-    model = ParametrizedFHNModel(Float32; stim = Stimulus(Float32; amplitude = -0.5f0))
+    model = FHNModel(Float32; stim = Stimulus(Float32; amplitude = -0.5f0))
     u = default_initial_state(model)
     du = fill(NaN32, 2)
 
@@ -186,7 +182,7 @@ end
 end
 
 @testset "FHN — zero allocations (functor)" begin
-    model = ParametrizedFHNModel(; stim = Stimulus(; amplitude = -0.5))
+    model = FHNModel(; stim = Stimulus(; amplitude = -0.5))
     u = default_initial_state(model)
     du = similar(u)
     p = SpatialContext((0.0, 0.0, 0.0), (a = Constant(0.2),))
@@ -202,7 +198,7 @@ end
     # Real usage: one suprathreshold pulse, then watch the pulse rise, plateau on the
     # upper branch, and recover. `e = 0.01` sets the recovery timescale, so a few hundred
     # time units covers a whole cycle.
-    model = ParametrizedFHNModel(;
+    model = FHNModel(;
         stim = Stimulus(; amplitude = -0.5, period = 1.0e6, duration = 1.0, start = 0.0),
     )
     prob = ODEProblem(model, (0.0, 400.0))
@@ -226,7 +222,7 @@ end
     @test s[end] < 0.1
 
     # No stimulus at all → the cell never leaves the fixed point.
-    quiet = ParametrizedFHNModel()
+    quiet = FHNModel()
     solq = solve(ODEProblem(quiet, (0.0, 400.0)), Tsit5(); abstol = 1.0e-10, reltol = 1.0e-8)
     @test maximum(abs, reduce(vcat, solq.u)) < 1.0e-8
 end
@@ -234,8 +230,8 @@ end
 @testset "FHN — connect edges are rejected with an actionable message" begin
     # The parameters are immutable struct fields, so the model cannot receive a `connect`.
     # `couple` must say so rather than failing later inside `setindex!`.
-    src = ParametrizedFHNModel()
-    dst = ParametrizedFHNModel()
+    src = FHNModel()
+    dst = FHNModel()
     nodes = (Subsystem(src; name = :src), Subsystem(dst; name = :dst))
     err = try
         couple(nodes, (connect(:src => :v, :dst => :a),))
