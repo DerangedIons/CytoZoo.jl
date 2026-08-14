@@ -1,4 +1,4 @@
-# Stimulus
+# Stimulus Currents
 
 A cell model needs an external stimulus current to fire. In CytoZoo the stimulus is a
 first-class object attached to the model, not a parameter buried in the parameter vector and

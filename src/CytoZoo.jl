@@ -52,4 +52,7 @@ export monitor_history
 include("models/torord/ToRORd.jl")
 export ToRORd
 
+include("models/fhn/FHN.jl")
+export FHNModel
+
 end

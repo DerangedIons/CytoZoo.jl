@@ -202,6 +202,26 @@ end
 @inline _resolve_spatial(v::Number, x, t) = v
 @inline _resolve_spatial(f, x, t) = f(x, t)
 
+# Resolve a single parameter against a `SpatialContext`'s overrides, falling back to the
+# model's own value when the context does not override that name. Multiple dispatch retires
+# the `overrides === nothing` test: the non-spatial call has no override method to enter.
+# In the `NamedTuple` method `name in names` compares two type parameters, so it folds at
+# compile time and only one branch survives.
+#
+# Call-site convention: pass a `fallback` already in the target element type and wrap the
+# whole call in `T(...)`, so both branches agree on type whichever one folds through.
+@inline _resolve_parameter(fallback, ::Nothing, ::Val, x, t) = fallback
+
+@inline function _resolve_parameter(
+    fallback,
+    overrides::NamedTuple{names},
+    ::Val{name},
+    x,
+    t,
+) where {names, name}
+    return name in names ? _resolve_spatial(getfield(overrides, name), x, t) : fallback
+end
+
 """
     SpatialFunction
 

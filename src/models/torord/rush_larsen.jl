@@ -1,4 +1,4 @@
-function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T}, parameters::AbstractVector, celltype, stim, x, t, dt, overrides::F) where {T, F}
+function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T}, parameters::AbstractVector, celltype, stim, x, t, dt, overrides) where {T}
 
     # Assign states
     #hL = u[1]
@@ -96,7 +96,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     IClb_Multiplier = parameters[24]
     IK1_Multiplier = parameters[25]
     IKb_Multiplier = parameters[26]
-    IKr_Multiplier_spatial = F !== Nothing && hasproperty(overrides, :IKr_Multiplier) ? T(_resolve_spatial(overrides.IKr_Multiplier, x, t)) : one(T)
+    IKr_Multiplier_spatial = T(_resolve_parameter(one(T), overrides, Val(:IKr_Multiplier), x, t))
     IKr_Multiplier = IKr_Multiplier_spatial * parameters[27]
     IKs_Multiplier = parameters[28]
     INaCa_Multiplier = parameters[29]
@@ -148,7 +148,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     Q10SRCaP = parameters[75]
     R = parameters[76]
     T_base = parameters[77]
-    T_val = F !== Nothing && hasproperty(overrides, :T) ? T(_resolve_spatial(overrides.T, x, t)) : T_base
+    T_val = T(_resolve_parameter(T_base, overrides, Val(:T), x, t))
     TOT_A = parameters[78]
     TRPN_n = parameters[79]
     Tref_b = parameters[80]
@@ -163,7 +163,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     ca50_b = parameters[89]
     cajsr_half = parameters[90]
     cao = parameters[91]
-    celltype_val = F !== Nothing && hasproperty(overrides, :celltype) ? T(_resolve_spatial(overrides.celltype, x, t)) : T(celltype)
+    celltype_val = T(_resolve_parameter(T(celltype), overrides, Val(:celltype), x, t))
     clo = parameters[93]
     cmdnmax_b = parameters[94]
     csqnmax = parameters[95]
@@ -181,7 +181,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     fTnIP = parameters[107]
     gamma = parameters[108]
     gamma_wu = parameters[109]
-    isHypoxic = F !== Nothing && hasproperty(overrides, :isHypoxic) ? T(_resolve_spatial(overrides.isHypoxic, x, t)) : zero(T)
+    isHypoxic = T(_resolve_parameter(zero(T), overrides, Val(:isHypoxic), x, t))
     jsrMidpoint = parameters[111]
     k1m = parameters[112]
     k1p = parameters[113]
@@ -222,7 +222,7 @@ function _torord_rush_larsen_impl!(u_new::AbstractVector{T}, u::AbstractVector{T
     nup = parameters[148]
     offset = parameters[149]
     pH_base = parameters[150]
-    pH = F !== Nothing && hasproperty(overrides, :pH) ? T(_resolve_spatial(overrides.pH, x, t)) : pH_base
+    pH = T(_resolve_parameter(pH_base, overrides, Val(:pH), x, t))
     perm50 = parameters[151]
     ph_bt = parameters[152]
     phi = parameters[153]
