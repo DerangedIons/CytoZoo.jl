@@ -47,7 +47,7 @@ has_rush_larsen(model)                          # true for ToRORd
 rush_larsen_step!(u_new, u, nothing, t, dt, model)   # model comes LAST
 ```
 
-## Stimulus
+## Stimuli
 
 ```julia
 Stimulus()                                       # -53, period 1000 ms, 1 ms wide
