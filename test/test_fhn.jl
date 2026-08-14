@@ -50,8 +50,16 @@ end
     @test isbitstype(typeof(m))
     @test isbitstype(typeof(m32))
 
-    # A closure-carrying stimulus is the documented CPU-only escape hatch.
-    @test !isbitstype(typeof(ParametrizedFHNModel(; stim = FunctionStimulus((x, t) -> 0.0))))
+    # `FunctionStimulus` is isbits *iff* its function is, which is the contract its
+    # docstring states. A non-capturing closure is a singleton type, so it stays isbits
+    # and can still ride into a GPU kernel...
+    @test isbitstype(typeof(ParametrizedFHNModel(; stim = FunctionStimulus((x, t) -> 0.0))))
+
+    # ...while one that closes over heap data is the CPU-only escape hatch.
+    waveform = [0.0, -0.5]
+    @test !isbitstype(
+        typeof(ParametrizedFHNModel(; stim = FunctionStimulus((x, t) -> waveform[1]))),
+    )
 end
 
 @testset "FHN — resting state is a genuine fixed point" begin
@@ -159,7 +167,7 @@ end
     u = default_initial_state(model)
     du = fill(NaN32, 2)
 
-    model(du, u, Float32(0))
+    model(du, u, nothing, Float32(0))
 
     @test eltype(du) == Float32
     @test all(isfinite, du)
@@ -204,7 +212,11 @@ end
     @test sol.retcode == ReturnCode.Success
     @test vmax > 0.8                       # depolarizes onto the upper branch
     @test sol.t[imax] < 100.0              # upstroke is fast relative to recovery
-    @test maximum(s) > 0.2                 # recovery variable charges up
+    # `s` has to charge past the knee of the v-nullcline `s = v(1-v)(v-a)` — that is what
+    # tips `v` off the upper branch and forces the recovery. With `a = 0.1` the cubic peaks
+    # at s ≈ 0.1262 (v ≈ 0.6846), so the knee, not some round number, is the bound worth
+    # asserting; the run reaches ≈ 0.155.
+    @test maximum(s) > 0.1262
     @test v[end] < 0.05                    # and the cell returns to rest
     @test s[end] < 0.1
 
