@@ -5,7 +5,7 @@
 | Model | States | Parameters | Cell types | Rush-Larsen | Monitors |
 |-------|--------|------------|------------|-------------|----------|
 | [`ToRORd`](@ref) | 65 | 177 | endocardial, epicardial, midmyocardial | yes | none yet |
-| [`ParametrizedFHNModel`](@ref) | 2 | 5 | — | no | none |
+| [`FHNModel`](@ref) | 2 | 5 | — | no | none |
 
 ### `ToRORd`
 
@@ -108,7 +108,7 @@ has_rush_larsen(model)
   validated against the ArmyHeart reference at `rtol = 1e-10`; this affects the initial
   condition only.
 
-### `ParametrizedFHNModel`
+### `FHNModel`
 
 The FitzHugh–Nagumo excitable-medium model — a dimensionless caricature of an action
 potential with one cubic fast variable and one linear slow recovery variable.
@@ -116,7 +116,7 @@ potential with one cubic fast variable and one linear slow recovery variable.
 ```@example models_fhn
 using CytoZoo
 
-model = ParametrizedFHNModel()
+model = FHNModel()
 (states = num_states(model), parameters = num_parameters(model))
 ```
 
@@ -136,14 +136,15 @@ a tissue framework's spatial machinery without paying for 65-state kinetics.
 #### Constructors
 
 ```julia
-ParametrizedFHNModel()                            # Float64, published parameters, stimulus off
-ParametrizedFHNModel(Float32)                     # Float32 element type throughout
-ParametrizedFHNModel(; a = 0.15)                  # override one parameter
-ParametrizedFHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
+FHNModel()                            # Float64, published parameters, stimulus off
+FHNModel(Float32)                     # Float32 element type throughout
+FHNModel(; a = 0.15)                  # override one parameter
+FHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
 ```
 
-[`FHNModel`](@ref) is a `Float64` alias of the type, matching the name Thunderbolt uses. It is
-a type, not a constructor — use it in signatures and `isa` tests.
+[`ParametrizedFHNModel`](@ref) is an alias of the same type, matching the name Thunderbolt
+gives this model. `ParametrizedFHNModel === FHNModel`, so either name works anywhere — in
+constructors, signatures, and `isa` tests alike.
 
 #### Parameters
 
@@ -177,12 +178,12 @@ model.stim
 ```
 
 A tissue framework normally injects the stimulus as a source term in its diffusion half, and
-a nonzero default here would silently add a second one. Pass an explicit [`Stimulus`](@ref)
-for single-cell use. The sign convention matches the rest of the zoo: `Istim` is *subtracted*
+a nonzero default here would silently add a second one. Pass an explicit
+[`Stimulus`](@ref) for single-cell use. The sign convention matches the rest of the zoo: `Istim` is *subtracted*
 from `dv/dt`, so a **negative** amplitude depolarizes.
 
 ```@example models_fhn
-firing = ParametrizedFHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
+firing = FHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
 du = similar(default_initial_state(firing))
 firing(du, default_initial_state(firing), nothing, 0.0)
 du
@@ -190,7 +191,7 @@ du
 
 #### Parameters Are Immutable Struct Fields
 
-`ParametrizedFHNModel` deliberately breaks the flat-`parameters`-vector convention: its five
+`FHNModel` deliberately breaks the flat-`parameters`-vector convention: its five
 parameters are plain fields, which keeps the whole model isbits so it can be captured by value
 inside a GPU kernel. The cost is that it cannot receive a [`connect`](@ref) edge —
 [`couple`](@ref) rejects that at construction with an actionable message. Build a new model

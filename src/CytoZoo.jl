@@ -53,6 +53,8 @@ include("models/torord/ToRORd.jl")
 export ToRORd
 
 include("models/fhn/FHN.jl")
-export ParametrizedFHNModel, FHNModel
+# `ParametrizedFHNModel` is an alias of `FHNModel` (Thunderbolt's spelling), not a
+# separate type — both are defined in `models/fhn/FHN.jl`.
+export FHNModel, ParametrizedFHNModel
 
 end

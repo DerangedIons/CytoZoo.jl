@@ -29,15 +29,20 @@ using OrdinaryDiffEq
 end
 
 @testset "FHN — constructors and defaults" begin
+    # `ParametrizedFHNModel` is Thunderbolt's spelling of the same type, not a second one.
+    # Every construction below therefore exercises both names at once.
+    @test ParametrizedFHNModel === FHNModel
+
     m = ParametrizedFHNModel()
     @test (m.a, m.b, m.c, m.d, m.e) == (0.1, 0.5, 1.0, 0.0, 0.01)
-    @test m isa FHNModel
+    @test m isa FHNModel{Float64}
 
     m32 = ParametrizedFHNModel(Float32)
     @test m32.a isa Float32
     @test m32.e isa Float32
     @test eltype(default_initial_state(m32)) == Float32
-    @test !(m32 isa FHNModel)
+    @test m32 isa FHNModel                 # the unparameterized name matches any eltype...
+    @test !(m32 isa FHNModel{Float64})     # ...so the eltype claim needs the parameter
 
     # Per-parameter overrides keep the rest at their defaults and promote to T.
     mk = ParametrizedFHNModel(; a = 0.25, e = 1 // 200)

@@ -3,7 +3,7 @@ include("states.jl")
 include("rhs.jl")
 
 """
-    ParametrizedFHNModel{T, S}
+    FHNModel{T, S}
 
 FitzHugh–Nagumo excitable-medium model (2 states, 5 parameters).
 
@@ -19,14 +19,14 @@ operator rather than the kinetics.
 
 # Constructors
 ```julia
-ParametrizedFHNModel()                            # Float64, published parameters, stimulus off
-ParametrizedFHNModel(Float32)                     # Float32 throughout
-ParametrizedFHNModel(; a = 0.15)                  # override one parameter
-ParametrizedFHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
+FHNModel()                            # Float64, published parameters, stimulus off
+FHNModel(Float32)                     # Float32 throughout
+FHNModel(; a = 0.15)                  # override one parameter
+FHNModel(; stim = Stimulus(; amplitude = -0.5, duration = 1.0))
 ```
 
-`FHNModel` is a `Float64` alias for use in signatures and `isa` tests; construct through
-`ParametrizedFHNModel`.
+[`ParametrizedFHNModel`](@ref) is an alias of this type, matching the name Thunderbolt
+gives the same model; the two are interchangeable.
 
 # Parameters
 
@@ -55,7 +55,7 @@ model isbits and lets it ride into a GPU kernel by value. The cost is that a
 [`connect`](@ref) edge cannot target it — [`couple`](@ref) rejects that at construction
 with an actionable message. Build a new model instead of mutating one.
 """
-struct ParametrizedFHNModel{T <: Number, S} <: AbstractCardiacCellModel
+struct FHNModel{T <: Number, S} <: AbstractCardiacCellModel
     a::T
     b::T
     c::T
@@ -65,16 +65,18 @@ struct ParametrizedFHNModel{T <: Number, S} <: AbstractCardiacCellModel
 end
 
 """
-    FHNModel
+    ParametrizedFHNModel
 
-`Float64` alias of [`ParametrizedFHNModel`](@ref), matching the name Thunderbolt uses.
-It is a type, not a constructor — build models with `ParametrizedFHNModel(...)`.
+Alias of [`FHNModel`](@ref), matching the name Thunderbolt gives the same model.
+`ParametrizedFHNModel === FHNModel`, so the two are interchangeable everywhere —
+including as constructors. It exists so code written against Thunderbolt's spelling
+needs no translation.
 """
-const FHNModel = ParametrizedFHNModel{Float64}
+const ParametrizedFHNModel = FHNModel
 
-ParametrizedFHNModel(; kwargs...) = ParametrizedFHNModel(Float64; kwargs...)
+FHNModel(; kwargs...) = FHNModel(Float64; kwargs...)
 
-function ParametrizedFHNModel(
+function FHNModel(
     ::Type{T};
     a::Real = FHN_DEFAULT_PARAMETERS.a,
     b::Real = FHN_DEFAULT_PARAMETERS.b,
@@ -83,18 +85,18 @@ function ParametrizedFHNModel(
     e::Real = FHN_DEFAULT_PARAMETERS.e,
     stim = Stimulus(T; amplitude = 0),
 ) where {T <: Number}
-    return ParametrizedFHNModel(T(a), T(b), T(c), T(d), T(e), stim)
+    return FHNModel(T(a), T(b), T(c), T(d), T(e), stim)
 end
 
 # ---------------------------------------------------------------------------
 # Required interface
 # ---------------------------------------------------------------------------
 
-num_states(::ParametrizedFHNModel) = FHN_NUM_STATES
-num_parameters(::ParametrizedFHNModel) = FHN_NUM_PARAMS
-transmembrane_potential_index(::ParametrizedFHNModel) = 1
+num_states(::FHNModel) = FHN_NUM_STATES
+num_parameters(::FHNModel) = FHN_NUM_PARAMS
+transmembrane_potential_index(::FHNModel) = 1
 
-function default_initial_state(::ParametrizedFHNModel{T}) where {T}
+function default_initial_state(::FHNModel{T}) where {T}
     return T[FHN_DEFAULT_INITIAL_STATE...]
 end
 
@@ -102,12 +104,12 @@ end
 # Functor — DiffEq-compatible ODE RHS
 # ---------------------------------------------------------------------------
 
-function (model::ParametrizedFHNModel)(du, u, ::Nothing, t)
+function (model::FHNModel)(du, u, ::Nothing, t)
     _fhn_rhs_impl!(du, u, model, nothing, t, nothing)
     return nothing
 end
 
-function (model::ParametrizedFHNModel)(du, u, p::SpatialContext, t)
+function (model::FHNModel)(du, u, p::SpatialContext, t)
     _fhn_rhs_impl!(du, u, model, p.x, t, p.overrides)
     return nothing
 end
@@ -116,11 +118,11 @@ end
 # Optional interface
 # ---------------------------------------------------------------------------
 
-state_names(::ParametrizedFHNModel) = FHN_STATE_NAMES
-parameter_names(::ParametrizedFHNModel) = FHN_PARAMETER_NAMES
+state_names(::FHNModel) = FHN_STATE_NAMES
+parameter_names(::FHNModel) = FHN_PARAMETER_NAMES
 
 # `findfirst` returns `nothing` for an unknown name, which is the interface convention
 # `couple`'s validation depends on (`ToRORd`'s `Dict` lookups throw instead).
-state_index(::ParametrizedFHNModel, name::Symbol) = findfirst(==(name), FHN_STATE_NAMES)
-parameter_index(::ParametrizedFHNModel, name::Symbol) =
+state_index(::FHNModel, name::Symbol) = findfirst(==(name), FHN_STATE_NAMES)
+parameter_index(::FHNModel, name::Symbol) =
     findfirst(==(name), FHN_PARAMETER_NAMES)
