@@ -87,16 +87,16 @@ behind one uniform interface.
 > [!TIP]
 > The examples above use defaults throughout. Cell type, element type, stimulus waveform,
 > spatial overrides, and solver choice are all configurable — see the
-> **[Getting Started guide](https://derangedions.github.io/CytoZoo.jl/stable/getting_started)**.
+> **[Getting Started guide](https://derangedions.github.io/CytoZoo.jl/dev/getting_started)**.
 
 ## Documentation
 
-- **[Getting Started](https://derangedions.github.io/CytoZoo.jl/stable/getting_started)** — build, solve, and plot an action potential
-- **[The Cell Model Interface](https://derangedions.github.io/CytoZoo.jl/stable/guides/interface)** — the tiered contract every model satisfies
-- **[Coupling](https://derangedions.github.io/CytoZoo.jl/stable/guides/coupling/)** — composing models, and the limitations to know about first
-- **[Spatial Heterogeneity](https://derangedions.github.io/CytoZoo.jl/stable/guides/spatial)** — per-cell parameter variation for tissue work
-- **[Quick Reference](https://derangedions.github.io/CytoZoo.jl/stable/guides/quickref)** — the cheat sheet
-- **[API Reference](https://derangedions.github.io/CytoZoo.jl/stable/reference/api)** — full function documentation
+- **[Getting Started](https://derangedions.github.io/CytoZoo.jl/dev/getting_started)** — build, solve, and plot an action potential
+- **[The Cell Model Interface](https://derangedions.github.io/CytoZoo.jl/dev/guides/interface)** — the tiered contract every model satisfies
+- **[Coupling](https://derangedions.github.io/CytoZoo.jl/dev/guides/coupling/)** — composing models, and the limitations to know about first
+- **[Spatial Heterogeneity](https://derangedions.github.io/CytoZoo.jl/dev/guides/spatial)** — per-cell parameter variation for tissue work
+- **[Quick Reference](https://derangedions.github.io/CytoZoo.jl/dev/guides/quickref)** — the cheat sheet
+- **[API Reference](https://derangedions.github.io/CytoZoo.jl/dev/reference/api)** — full function documentation
 
 ## Contributing
 
