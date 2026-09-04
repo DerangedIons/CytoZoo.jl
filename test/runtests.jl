@@ -10,6 +10,7 @@ using Test
     include("test_fhn.jl")
     include("test_scimlbase_ext.jl")
     include("test_monitors.jl")
+    include("test_clamp.jl")
     if Base.find_package("TWorld") !== nothing
         include("test_tworld.jl")
     else

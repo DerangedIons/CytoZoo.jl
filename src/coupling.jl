@@ -464,6 +464,11 @@ _provides_writable_parameters(model) =
     hasproperty(model, :parameters) ||
     which(writable_parameters, Tuple{typeof(model)}) !== which(writable_parameters, Tuple{AbstractCellModel})
 
+# A `ClampedCell` forwards `writable_parameters`, which would pass the test above whether or
+# not the wrapped model actually provides one. Ask the model underneath, so a clamped receiver
+# that cannot take a connect edge still gets the actionable message naming its own type.
+_provides_writable_parameters(c::ClampedCell) = _provides_writable_parameters(c.base)
+
 # Reject conflicting ops into one receiver slot: a mix of `overwrite`/`+`, or more than one
 # `overwrite` (silent last-wins). Homogeneous `+` fan-in is the supported cross-sectional sum.
 function _check_connect_op_conflicts(connects::Tuple)

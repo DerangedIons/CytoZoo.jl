@@ -1,6 +1,7 @@
 module CytoZoo
 
 include("interface.jl")
+include("clamp.jl")
 include("spatial.jl")
 include("stimulus.jl")
 include("coupling.jl")
@@ -13,6 +14,7 @@ export num_states, num_parameters, transmembrane_potential_index, default_initia
 export has_rush_larsen, rush_larsen_step!
 export state_index, parameter_index, state_names, parameter_names, writable_parameters
 export num_monitors, monitor_names, monitor_values!
+export ClampedCell, clamp_states, base_model
 export couple, CoupledModel, Subsystem, share, connect, overwrite
 
 # Stubs for extensions. Docstrings live here rather than on the extension methods so
