@@ -77,6 +77,14 @@ Stimulus
 FunctionStimulus
 ```
 
+## State Clamps
+
+```@docs
+ClampedCell
+clamp_states
+base_model
+```
+
 ## Coupling
 
 ```@docs

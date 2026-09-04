@@ -101,6 +101,21 @@ nodes = [Subsystem(Core(); name = :C)]
 enabled && push!(nodes, Subsystem(Module(); name = :M))
 ```
 
+## Clamping States
+
+```julia
+ClampedCell(model, (1,))                         # hold Vm at its own initial value
+ClampedCell(model, (1,), (-20.0,))               # hold Vm at -20 mV
+c, u = clamp_states(model; nai = 20.0)           # by name, with the state vector seeded
+c, u = clamp_states(model, sol.u[end]; nai = 7.5)   # next protocol segment, new level
+
+base_model(c)                                    # unwrap for the model's own accessors
+```
+
+A clamp holds the state it is given and forwards everything else, Rush-Larsen included. Under
+a contributory share (`op = +`), clamp the `CoupledModel` rather than the component — a
+component's clamp drops only its own contribution.
+
 ## Monitors
 
 ```julia
