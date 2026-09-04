@@ -189,10 +189,23 @@ function monitor_values! end
     SpatialContext(x, overrides)
 
 Per-cell spatial context passed as the `p` argument in `model(du, u, p, t)`.
-Bundles the cell's position `x` with a `NamedTuple` of spatial parameter
+Bundles the cell's spatial payload `x` with a `NamedTuple` of spatial parameter
 overrides (scalars, callables, or isbits functors).
 
-GPU-compatible (isbits) when both `X` and every element of `SF` are isbits.
+`X` is deliberately unconstrained. In the common case `x` is a position vector and
+nothing else, which is what [`SpatialFunction`](@ref) and the built-in overrides expect.
+But a tissue backend may need to hand a cell a node-local quantity that is *solved*
+rather than prescribed — a transported field the cell's kinetics read, for instance —
+and such a value can reach no `(x, t)` callable, because `(x, t)` is exactly the
+information a prescribed field is a function of. Carrying it in `x` alongside the
+position is the sanctioned route: the backend defines its own payload type, and the
+`(x, t)` callables it pairs with that payload agree on how to read it. A payload that
+is not a plain position is a private contract between one backend and the callables it
+constructs, so a callable that dereferences a named field of `x` is valid only under a
+`SpatialContext` that backend built.
+
+GPU-compatible (isbits) when both `X` and every element of `SF` are isbits — which a
+payload type keeps if it is an isbits struct of isbits fields.
 """
 struct SpatialContext{X, SF}
     x::X
@@ -235,10 +248,15 @@ abstract type SpatialFunction end
 
 Supertype for stimulus current models. A subtype must be callable as
 `(s::AbstractStimulus)(x, t)` and return the stimulus current directly, where
-`x` is a position vector (matching `SpatialFunction`) and `t` is time.
+`x` is the spatial payload of the enclosing [`SpatialContext`](@ref) — usually a
+position vector, matching `SpatialFunction` — and `t` is time.
 
 A stimulus used on the non-spatial path (`model(du, u, nothing, t)`) must be
 position-independent — it must not dereference `x`, so that `s(nothing, t)`
-works. Subtypes that index `x` are only valid under a `SpatialContext`.
+works. Subtypes that read `x` at all are only valid under a `SpatialContext`, and one
+that reads a *named field* of `x` rather than indexing a position is valid only under
+a context built by the backend that defines that payload; see `SpatialContext` for why
+a payload wider than a position is the sanctioned way to reach a cell with a solved,
+rather than prescribed, node-local quantity.
 """
 abstract type AbstractStimulus end
