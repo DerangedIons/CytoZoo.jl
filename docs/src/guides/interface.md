@@ -108,6 +108,18 @@ mean overriding all three hooks. The defaults are chosen so a model that opts ou
 answers the query gracefully — [`monitor_history`](@ref) on a zero-monitor model returns an
 empty result rather than erroring.
 
+### Wrappers
+
+A model can also be *wrapped*. A wrapper satisfies the contract by forwarding it to the model
+inside, and changes one thing — [`ClampedCell`](@ref) forwards everything and zeroes `du` at
+the states it holds. Because the tiers above are all a wrapper needs, one implementation
+covers every model in the zoo, including a [`CoupledModel`](@ref). See
+[Clamping States](clamping.md).
+
+A wrapper can forward only what the interface names. Reach a model's own accessors through
+[`base_model`](@ref), which unwraps to the model underneath and is the identity on anything
+that is not a wrapper.
+
 ## Hot-Swapping
 
 The payoff of the contract is that a function written against it drives any model. Here is a

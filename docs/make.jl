@@ -31,6 +31,7 @@ makedocs(;
                 "Limitations" => "guides/coupling/limitations.md",
             ],
             "Derived Observables" => "guides/monitors.md",
+            "Clamping States" => "guides/clamping.md",
             "Implementing a Model" => "guides/implementing_a_model.md",
             "Integrations" => "guides/integrations.md",
             "Quick Reference" => "guides/quickref.md",
