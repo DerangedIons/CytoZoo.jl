@@ -1,5 +1,5 @@
-# State-clamp tests: the ClampedCell wrapper (freeze `du`, seed `u0`), name-keyed
-# `clamp_states`, interface forwarding, the Rush-Larsen path, and how a clamp composes with
+# State-clamp tests: the ClampedCell wrapper (freeze `du`, seed `u0`), the name-keyed
+# constructor and `seed!`, interface forwarding, the Rush-Larsen path, and how a clamp composes with
 # `couple`. Needs a solver for the "a held state does not move" trajectory test.
 
 using OrdinaryDiffEq
@@ -77,41 +77,53 @@ end
         @test c.values == (20.0,)
     end
 
-    @testset "clamp_states resolves names and seeds the state vector" begin
+    @testset "the keyword constructor resolves names and seeds the state vector" begin
         m = _ClampMock()
-        c, u = clamp_states(m; na = 20.0)
+        c = ClampedCell(m; na = 20.0)
 
         @test c isa ClampedCell
         @test c.indices == (2,)
-        @test u == [-80.0, 20.0, 0.1]
-        @test default_initial_state(c) == u          # the wrapper alone reproduces the seed
+        @test c.values == (20.0,)
+        u = default_initial_state(c)
+        @test u == [-80.0, 20.0, 0.1]                # the wrapper alone supplies the seed
 
         du = similar(u)
         c(du, u, nothing, 0.0)
         @test du[2] == 0.0
 
         # Several names, order independent.
-        c2, u2 = clamp_states(m; ca = 0.5, v = -20.0)
+        c2 = ClampedCell(m; ca = 0.5, v = -20.0)
         @test sort(collect(c2.indices)) == [1, 3]
-        @test u2 == [-20.0, 10.0, 0.5]
+        @test default_initial_state(c2) == [-20.0, 10.0, 0.5]
     end
 
-    @testset "clamp_states continues a protocol from a handed-in state" begin
+    @testset "seed! continues a protocol from a handed-in state" begin
         m = _ClampMock()
         u_prev = [-12.0, 20.0, 7.0]
-        c, u = clamp_states(m, u_prev; na = 7.5)
+        c = ClampedCell(m; na = 7.5)
+        u = seed!(copy(u_prev), c)
 
         @test u == [-12.0, 7.5, 7.0]                 # only the clamped slot is re-seeded
-        @test u_prev == [-12.0, 20.0, 7.0]           # the caller's vector is untouched
+        @test u_prev == [-12.0, 20.0, 7.0]           # copied first, so the caller's vector is untouched
         @test default_initial_state(c) == [-80.0, 7.5, 0.1]  # base IC, same hold
+
+        # In place, returning its argument.
+        w = zeros(3)
+        @test seed!(w, c) === w
+        @test w == [0.0, 7.5, 0.0]
+
+        # Nested clamps seed every level; a bare model seeds nothing.
+        nested = ClampedCell(c, (1,), (-20.0,))
+        @test seed!(zeros(3), nested) == [-20.0, 7.5, 0.0]
+        @test seed!([1.0, 2.0, 3.0], m) == [1.0, 2.0, 3.0]
     end
 
-    @testset "clamp_states rejects unknown names and empty clamps" begin
+    @testset "the keyword constructor rejects unknown names and empty clamps" begin
         m = _ClampMock()
-        @test_throws ArgumentError clamp_states(m; nope = 1.0)
-        @test_throws ArgumentError clamp_states(m)
+        @test_throws ArgumentError ClampedCell(m; nope = 1.0)
+        @test_throws ArgumentError ClampedCell(m)
         err = try
-            clamp_states(m; nope = 1.0)
+            ClampedCell(m; nope = 1.0)
         catch e
             e
         end
@@ -119,8 +131,7 @@ end
     end
 
     @testset "the model's element type survives the clamp" begin
-        c, u = clamp_states(FHNModel(Float32); v = 0.5)
-        @test eltype(u) === Float32
+        c = ClampedCell(FHNModel(Float32); v = 0.5)
         @test c.values === (0.5f0,)
         @test eltype(default_initial_state(c)) === Float32
     end
@@ -181,7 +192,8 @@ end
 
     @testset "a held state does not move over a solve" begin
         m = _ClampMock()
-        c, u = clamp_states(m, [-60.0, 10.0, 0.1]; na = 20.0)
+        c = ClampedCell(m; na = 20.0)
+        u = seed!([-60.0, 10.0, 0.1], c)
         sol = solve(ODEProblem(c, u, (0.0, 5.0), nothing), Tsit5(); reltol = 1.0e-10, abstol = 1.0e-10)
         vend, naend, caend = sol.u[end]
 
@@ -198,8 +210,8 @@ end
     end
 
     @testset "monitors survive the wrapper post-solve" begin
-        c, u = clamp_states(_ClampMock(); na = 20.0)
-        sol = solve(ODEProblem(c, u, (0.0, 5.0), nothing), Tsit5())
+        c = ClampedCell(_ClampMock(); na = 20.0)
+        sol = solve(ODEProblem(c, default_initial_state(c), (0.0, 5.0), nothing), Tsit5())
         h = monitor_history(sol, c)
         @test h.names == (:total,)
         @test h.values[1, end] ≈ sol.u[end][2] + sol.u[end][3]
@@ -224,7 +236,7 @@ end
 
 @testset "ClampedCell — composition with couple" begin
     @testset "a clamped component clamps its own states, in component-local indices" begin
-        clamped_a, _ = clamp_states(_ClampMock(); na = 20.0)
+        clamped_a = ClampedCell(_ClampMock(); na = 20.0)
         cm = couple([Subsystem(clamped_a; name = :A), Subsystem(_ClampMock(); name = :B)])
 
         # The component's seeded IC flows into the coupled layout — no hand-patching of U0.
@@ -256,14 +268,15 @@ end
         @test dU[vslot] == -_MONO_K * (U[vslot] - U[state_index(cm, :a)])
 
         # Wrapping the coupling holds it.
-        outer, U_outer = clamp_states(cm; v = 10.0)
+        outer = ClampedCell(cm; v = 10.0)
+        U_outer = default_initial_state(outer)
         dU_outer = similar(U_outer)
         outer(dU_outer, U_outer, nothing, 0.0)
         @test dU_outer[vslot] == 0.0
     end
 
     @testset "a clamped receiver still takes a connect edge" begin
-        clamped_p, _ = clamp_states(_ClampMock(); v = -20.0)
+        clamped_p = ClampedCell(_ClampMock(); v = -20.0)
         cm = couple(
             [Subsystem(_MonoA(); name = :S), Subsystem(clamped_p; name = :R)],
             [connect(:S => :d, :R => :k)],

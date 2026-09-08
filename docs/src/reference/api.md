@@ -81,7 +81,7 @@ FunctionStimulus
 
 ```@docs
 ClampedCell
-clamp_states
+seed!
 base_model
 ```
 

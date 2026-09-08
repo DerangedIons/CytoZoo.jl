@@ -42,11 +42,12 @@ default_initial_state(ClampedCell(model, (1,)))[1]
 
 ## Clamping by Name
 
-[`clamp_states`](@ref) resolves state names and returns the model together with a seeded
-state vector:
+The keyword form resolves state names, so a clamp reads the way the protocol is written, and
+`default_initial_state` hands back the seeded vector:
 
 ```@example clamp
-c, u = clamp_states(model; v = -20.0, nai = 15.0)
+c = ClampedCell(model; v = -20.0, nai = 15.0)
+u = default_initial_state(c)
 (u[state_index(model, :v)], u[state_index(model, :nai)])
 ```
 
@@ -54,25 +55,27 @@ Names resolve against [`state_names`](@ref), so a typo names the states that do 
 
 ```@example clamp
 try
-    clamp_states(FHNModel(); vm = 0.5)
+    ClampedCell(FHNModel(); vm = 0.5)
 catch err
     err.msg
 end
 ```
 
-Clamp values are converted to `eltype(u0)`, so a `Float32` model stays `Float32` end to end.
+Clamp values are converted to the model's state element type, so a `Float32` model stays
+`Float32` end to end.
 
 ### Multi-Segment Protocols
 
-Pass a state vector to continue from where a previous segment ended. The seed is re-applied
-to the state you hand in, so the level can change from segment to segment while the hold
-stays:
+[`seed!`](@ref) writes the held values into a state vector you already have. Continue from
+where a previous segment ended and re-seed it, so the level can change from segment to segment
+while the hold stays:
 
 ```julia
-c1, u1 = clamp_states(model; nai = 20.0)               # segment 1: elevated
-sol1 = solve(ODEProblem(c1, u1, (0.0, 60_000.0), nothing), FBDF())
+c1 = ClampedCell(model; nai = 20.0)                    # segment 1: elevated
+sol1 = solve(ODEProblem(c1, default_initial_state(c1), (0.0, 60_000.0), nothing), FBDF())
 
-c2, u2 = clamp_states(model, sol1.u[end]; nai = 7.5)   # segment 2: back to baseline
+c2 = ClampedCell(model; nai = 7.5)                     # segment 2: back to baseline
+u2 = seed!(copy(sol1.u[end]), c2)
 sol2 = solve(ODEProblem(c2, u2, (0.0, 60_000.0), nothing), FBDF())
 ```
 
@@ -139,7 +142,7 @@ others.
 
 ```julia
 cm = couple(nodes, edges)
-held, U0 = clamp_states(cm; mito_cai = 0.1)     # holds the global slot, whoever writes it
+held = ClampedCell(cm; mito_cai = 0.1)          # holds the global slot, whoever writes it
 ```
 
 ## See Also

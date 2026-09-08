@@ -6,7 +6,7 @@ several models into one monolithically-solved ODE.
 ## Key files
 - interface contract and monitor hooks: `src/interface.jl`
 - coupling graph (`couple`, `share`, `connect`, `CoupledModel`): `src/coupling.jl`
-- state clamps (`ClampedCell`, `clamp_states`, `base_model`): `src/clamp.jl`
+- state clamps (`ClampedCell`, `seed!`, `base_model`): `src/clamp.jl`
 - spatial context and GPU-safe spatial functors: `src/spatial.jl`
 - stimulus types: `src/stimulus.jl`
 - models, one directory each: `src/models/<name>/` (`<Name>.jl`, `parameters.jl`, `states.jl`, `rhs.jl`, `rush_larsen.jl`, `monitors.jl`)

@@ -106,8 +106,8 @@ enabled && push!(nodes, Subsystem(Module(); name = :M))
 ```julia
 ClampedCell(model, (1,))                         # hold Vm at its own initial value
 ClampedCell(model, (1,), (-20.0,))               # hold Vm at -20 mV
-c, u = clamp_states(model; nai = 20.0)           # by name, with the state vector seeded
-c, u = clamp_states(model, sol.u[end]; nai = 7.5)   # next protocol segment, new level
+c = ClampedCell(model; nai = 20.0)               # by name; default_initial_state(c) is seeded
+seed!(copy(sol.u[end]), c)                       # re-seed a state you already have (next segment)
 
 base_model(c)                                    # unwrap for the model's own accessors
 ```
