@@ -794,14 +794,25 @@ end
 """
     MonEntry
 
-One monitor-sourcing component's entry in a [`CoupledModel`](@ref)'s monitor pre-pass. `block` is
-the component's slice of the global state (as in [`CompEntry`](@ref)) and `range` its slice of
-the coupling's flat monitor scratch vector.
+One monitor-sourcing component's entry in a [`CoupledModel`](@ref)'s monitor pre-pass, in
+topological order over monitor-sourced edges. `block` is the component's slice of the global
+state (as in [`CompEntry`](@ref)) and `range` its slice of the coupling's flat monitor scratch.
+
+The remaining fields are the component's own staging, resolved exactly as [`CompEntry`](@ref)'s
+are and binding the same parameter vector: the pre-pass stages a component's connect inputs
+immediately BEFORE evaluating its monitors, so a monitor that reads a staged slot sees this
+evaluation's value. They are empty for a monitor source that receives no edge, which is the
+common case — then `_connect!` hits its no-op method and the pre-pass is exactly what it was.
 """
-struct MonEntry{M, B}
+struct MonEntry{M, B, P, OW, AD, MOW, MAD}
     model::M
     block::B
     range::UnitRange{Int}
+    params::P
+    overwrites::OW
+    adds::AD
+    monitor_overwrites::MOW
+    monitor_adds::MAD
 end
 
 # Identity in base — zero overhead on the Float64 / explicit-solver path. `ext/ForwardDiffExt.jl`
@@ -827,20 +838,34 @@ _entries(components, parent, classes, additive, gains, connects, layout, mon_off
 # type parameter, so the functor stays specialized.
 _block(idxs) = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
 
+# Resolve every connect edge targeting `ck` into the tuples that stage it: state sources to
+# (global_state_index, dst_param, gain), monitor sources to (monitor_scratch_index, dst_param,
+# gain), partitioned by op so every per-eval write is a single concrete code path. `params` is the
+# receiver's writable vector (the private deepcopy `couple` made), or `nothing` when it receives
+# nothing. ONE function, used by both the monitor pre-pass and the component walk, so the two
+# cannot disagree about which slots a component stages or where their sources live.
+function _staging(components, connects, layout, mon_offsets, ck)
+    si = layout.solution_indices
+    ow_l, ad_l, mow_l, mad_l = _connect_plan(components, connects, ck)
+    toglobal(e) = (si[e[1]][e[2]], e[3], e[4])       # (src, src_local, dst_param, gain)
+    tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3], e[4])
+    has_edges = !(isempty(ow_l) && isempty(ad_l) && isempty(mow_l) && isempty(mad_l))
+    return (
+        has_edges ? writable_parameters(components[ck]) : nothing,
+        Tuple(map(toglobal, ow_l)),
+        Tuple(map(toglobal, ad_l)),
+        Tuple(map(tomonitor, mow_l)),
+        Tuple(map(tomonitor, mad_l)),
+    )
+end
+
 function _entry(components, parent, classes, additive, gains, connects, layout, mon_offsets, ck)
     si = layout.solution_indices
     frozen = _frozen_indices(components, parent, classes, additive, ck)
     accumulated = _accumulated_indices(components, parent, classes, ck)
     gained = _gained_indices(components, gains, ck)
-    ow_l, ad_l, mow_l, mad_l = _connect_plan(components, connects, ck)
-    toglobal(e) = (si[e[1]][e[2]], e[3], e[4])  # (src, src_local, dst_param, gain) -> (src_global, …)
-    tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3], e[4])   # -> (monitor_scratch_index, …)
-    overwrites = map(toglobal, ow_l) |> Tuple
-    adds = map(toglobal, ad_l) |> Tuple
-    monitor_overwrites = map(tomonitor, mow_l) |> Tuple
-    monitor_adds = map(tomonitor, mad_l) |> Tuple
-    has_edges = !(isempty(ow_l) && isempty(ad_l) && isempty(mow_l) && isempty(mad_l))
-    params = has_edges ? writable_parameters(components[ck]) : nothing
+    params, overwrites, adds, monitor_overwrites, monitor_adds =
+        _staging(components, connects, layout, mon_offsets, ck)
     return CompEntry(
         components[ck], _block(si[ck]), params, frozen, accumulated, gained,
         overwrites, adds, monitor_overwrites, monitor_adds,
@@ -973,19 +998,25 @@ function _build_monitor_plan(components::NamedTuple, connects::Tuple, layout)
         offsets[ck] = total
         total += num_monitors(components[ck])
     end
-    return _mon_entries(components, layout, order, offsets, 1), offsets, total
+    return _mon_entries(components, connects, layout, order, offsets, 1), offsets, total
 end
 
-_mon_entries(components, layout, order, offsets, i) =
+_mon_entries(components, connects, layout, order, offsets, i) =
     i > length(order) ? () :
     (
-        _mon_entry(components, layout, offsets, order[i]),
-        _mon_entries(components, layout, order, offsets, i + 1)...,
+        _mon_entry(components, connects, layout, offsets, order[i]),
+        _mon_entries(components, connects, layout, order, offsets, i + 1)...,
     )
 
-function _mon_entry(components, layout, offsets, ck)
+function _mon_entry(components, connects, layout, offsets, ck)
     off = offsets[ck]
-    return MonEntry(components[ck], _block(layout.solution_indices[ck]), (off + 1):(off + num_monitors(components[ck])))
+    range = (off + 1):(off + num_monitors(components[ck]))
+    params, overwrites, adds, monitor_overwrites, monitor_adds =
+        _staging(components, connects, layout, offsets, ck)
+    return MonEntry(
+        components[ck], _block(layout.solution_indices[ck]), range,
+        params, overwrites, adds, monitor_overwrites, monitor_adds,
+    )
 end
 
 # Save the running value of every accumulating slot this component is about to overwrite. An
@@ -1061,15 +1092,26 @@ _reset_accumulators!(dU, ::Tuple{}) = nothing
     return _reset_accumulators!(dU, Base.tail(slots))
 end
 
-# Monitor pre-pass: fill the flat monitor scratch from each monitor-sourcing component's own
-# `monitor_values!`. Monitors are algebraic in (U, t) and U does not change during an evaluation,
-# so computing them once up front is exactly equivalent to recomputing per receiver, and cheaper.
-# The source's state slice is copied through `_connect_value` first, which is what keeps a derived
-# input frozen to its primal inside an implicit solver's Newton step (see ext/ForwardDiffExt.jl)
-# and what keeps the scratch a plain real vector under ForwardDiff.
+# Monitor pre-pass: for each monitor-sourcing component IN TOPOLOGICAL ORDER, stage its connect
+# inputs and then fill its slice of the flat monitor scratch from its own `monitor_values!`.
+# Interleaved, not two-phase: staging a component can need another component's monitor (a monitor
+# chain), so "stage everything, then monitor everything" reads a stale slot. The topological order
+# guarantees every value staged here is final — a monitor feeding this component was computed on
+# an earlier iteration, and a state source is read live from U.
+#
+# Monitors are algebraic in (U, t) and U does not change during an evaluation, so computing them
+# once up front is exactly equivalent to recomputing per receiver, and cheaper. The source's state
+# slice is copied through `_connect_value` first, which is what keeps a derived input frozen to
+# its primal inside an implicit solver's Newton step (see ext/ForwardDiffExt.jl) and what keeps
+# the scratch a plain real vector under ForwardDiff.
+#
+# The component walk stages these slots AGAIN, which is deliberate and free of consequence:
+# `_connect!` zeroes a `+` slot before accumulating, so it is idempotent, and nothing it reads has
+# changed. Keeping `_run!` untouched is what confines this fix to the pre-pass.
 _monitors!(U, t, ::Tuple{}, mon, scratch) = nothing
 function _monitors!(U, t, mplan, mon, scratch)
     e = first(mplan)
+    _connect!(U, mon, e.params, e.overwrites, e.adds, e.monitor_overwrites, e.monitor_adds)
     n = length(e.block)
     @inbounds for i in 1:n
         scratch[i] = _connect_value(U[e.block[i]])

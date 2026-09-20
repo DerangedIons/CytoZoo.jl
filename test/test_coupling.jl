@@ -962,3 +962,31 @@ end
     selfcyc = (connect(:D => :b, :D => :in),)
     @test_throws ArgumentError CytoZoo._monitor_component_order(comps, selfcyc, [:D])
 end
+
+@testset "coupling — monitor pre-pass carries its own staging" begin
+    # A monitor source with no incoming edges stages nothing: every staging field is empty and
+    # `params` is `nothing`, so `_connect!` hits its no-op method and the pre-pass is unchanged.
+    cm = couple(
+        [Subsystem(_MonoDerived(); name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:D => :b, :R => :d_ext)],
+    )
+    e = only(cm.monitor_plan)
+    @test e.params === nothing
+    @test e.overwrites === () && e.adds === ()
+    @test e.monitor_overwrites === () && e.monitor_adds === ()
+
+    # The pre-pass entry and the walk entry for one component bind the SAME parameter vector —
+    # the private deepcopy `couple` made — so the two stagings cannot disagree.
+    cm2 = couple(
+        [Subsystem(_MonoA(); name = :A), Subsystem(_MonoReader(); name = :R)],
+        [connect(:A => :d, :R => :d_ext)],
+    )
+    walk_R = only(filter(en -> en.model isa _MonoReader, collect(cm2.plan)))
+    @test walk_R.params === CytoZoo.writable_parameters(cm2.components.R)
+
+    # And the untouched path stays allocation-free.
+    U = default_initial_state(cm)
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0
+end
