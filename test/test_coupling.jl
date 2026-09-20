@@ -915,3 +915,50 @@ end
         ],
     )
 end
+
+# --- monitor dependency order (W3-02) -------------------------------------------------------
+#
+# The pre-pass's component order is a topological sort over monitor-sourced connect edges
+# between monitor-sourcing components. Exercised directly: while the blanket monitor-receive
+# rejection stands, no `couple()`-able graph carries an ordering constraint at all.
+
+@testset "coupling — monitor component order" begin
+    comps = (
+        S = _MonoDerived(), D = _DerivedReceiver(), R = _MonoReader(), D2 = _DerivedReceiver(),
+    )
+
+    # :S's monitor feeds :D, which itself sources a monitor -> :S must precede :D, whatever
+    # order the edges were declared in.
+    fwd = (connect(:S => :b, :D => :in), connect(:D => :b, :R => :d_ext))
+    rev = (connect(:D => :b, :R => :d_ext), connect(:S => :b, :D => :in))
+    @test CytoZoo._monitor_component_order(comps, fwd, [:S, :D]) == [:S, :D]
+    @test CytoZoo._monitor_component_order(comps, rev, [:D, :S]) == [:S, :D]
+
+    # A STATE-sourced edge into a monitor source imposes no order: states are read live from U.
+    state_back = (connect(:D => :b, :R => :d_ext), connect(:R => :acc, :D => :in))
+    @test CytoZoo._monitor_component_order(comps, state_back, [:D]) == [:D]
+
+    # Unconstrained sources keep declaration order, so monitor_scratch offsets do not shift
+    # with an irrelevant permutation of the edge list.
+    indep = (connect(:S => :b, :R => :d_ext), connect(:D => :b, :R => :d_ext))
+    @test CytoZoo._monitor_component_order(comps, indep, [:S, :D]) == [:S, :D]
+    @test CytoZoo._monitor_component_order(comps, indep, [:D, :S]) == [:D, :S]
+
+    # A genuine cycle: each component's monitor feeds a slot the other's monitor may read.
+    cyc = (connect(:D => :b, :D2 => :in), connect(:D2 => :b, :D => :in))
+    err = try
+        CytoZoo._monitor_component_order(comps, cyc, [:D, :D2])
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("cyclic monitor dependency", msg)
+    @test occursin("connect(:D => :b, :D2 => :in)", msg)
+    @test occursin("connect(:D2 => :b, :D => :in)", msg)
+
+    # A self-edge is a one-node cycle and must not be sorted past.
+    selfcyc = (connect(:D => :b, :D => :in),)
+    @test_throws ArgumentError CytoZoo._monitor_component_order(comps, selfcyc, [:D])
+end

@@ -860,16 +860,113 @@ function _accumulating_slots(plan::Tuple)
     return Tuple(slots)
 end
 
-# Components sourcing at least one monitor, each with its slice of the coupling's flat monitor
-# scratch. Order follows first appearance in the edge list; `_entry` resolves monitor edges
-# against the same `offsets` map, so the two stay consistent. Empty when no edge sources a
-# monitor — then the pre-pass is a `Tuple{}` method and compiles away entirely.
-function _build_monitor_plan(components::NamedTuple, connects::Tuple, layout)
-    order = Symbol[]
+# Topological order for the monitor pre-pass. A MONITOR-sourced edge `u -> v` fills one of v's
+# staged slots from u's monitor, so if v also sources a monitor, u's monitors must be computed
+# before v is staged. Nothing else constrains the order: a STATE source is read live from the
+# global state vector, and a receiver that sources no monitor is staged in the component walk,
+# after every monitor is already computed.
+#
+# Nodes are COMPONENTS, not (component, monitor) pairs. `monitor_values!` fills a model's whole
+# monitor vector in one opaque call, so "does this monitor read that staged slot" is not
+# statically knowable — the same undecidability that motivated the blanket rejection this
+# replaces. Component granularity is conservative (it orders, and can reject, on a dependency an
+# individual monitor may not actually have) and still strictly more permissive than rejecting
+# every monitor-source/connect-receiver overlap.
+#
+# Kept SEPARATE from `_operator_order`: that sort carries share-owner precedence, this one
+# carries monitor dataflow, and the two are independent. Merging them would report a cycle on a
+# graph that is fine — a component owning a share with Y (Y first) while sourcing a monitor into
+# Y (X first) is contradictory only if the two constraints share a sort.
+function _monitor_component_order(
+        components::NamedTuple, connects::Tuple, mon_comps::Vector{Symbol}
+    )
+    edges = Tuple{Symbol, Symbol}[]   # (before, after)
     for cn in connects
         _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
-        cn.src in order || push!(order, cn.src)
+        (cn.src in mon_comps && cn.dst in mon_comps) || continue
+        push!(edges, (cn.src, cn.dst))
     end
+    isempty(edges) && return mon_comps
+
+    order = Symbol[]
+    remaining = copy(mon_comps)
+    while !isempty(remaining)
+        ready = filter(c -> !any(e -> e[2] === c && e[1] in remaining, edges), remaining)
+        isempty(ready) && _throw_monitor_cycle(components, connects, remaining, edges)
+        next = first(ready)                   # stable: first in declaration order
+        push!(order, next)
+        deleteat!(remaining, findfirst(==(next), remaining))
+    end
+    return order
+end
+
+# Recover ONE concrete cycle from the unresolved sub-graph, so the error names the edges a user
+# has to break rather than the whole tangle. Every node still in `remaining` has an incoming edge
+# from another node in `remaining`, so walking predecessors from any of them must revisit a node,
+# and that node closes the cycle. Returned in forward order with the first node repeated last.
+function _find_monitor_cycle(remaining::Vector{Symbol}, edges::Vector{Tuple{Symbol, Symbol}})
+    node = first(remaining)
+    seen = Symbol[]
+    while !(node in seen)
+        push!(seen, node)
+        i = findfirst(e -> e[2] === node && e[1] in remaining, edges)
+        node = edges[i][1]
+    end
+    m = findfirst(==(node), seen)
+    return [seen[m]; reverse(seen[(m + 1):end]); seen[m]]
+end
+
+# The cycle is reported at `couple()` time, in place of the blanket monitor-receive rejection.
+# The message does NOT claim to know whether this is an unsolvable algebraic loop or a cycle the
+# user could break, because at component granularity those are indistinguishable — it states both
+# readings and the action each implies.
+function _throw_monitor_cycle(
+        components::NamedTuple, connects::Tuple, remaining::Vector{Symbol},
+        edges::Vector{Tuple{Symbol, Symbol}}
+    )
+    cyc = _find_monitor_cycle(remaining, edges)
+    lines = String[]
+    for i in 1:(length(cyc) - 1)
+        u, v = cyc[i], cyc[i + 1]
+        for cn in connects
+            (cn.src === u && cn.dst === v) || continue
+            _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
+            push!(lines, "    connect(:$u => :$(cn.src_state), :$v => :$(cn.dst_slot))")
+        end
+    end
+    names = join(map(c -> ":$c", unique(cyc)), ", ")
+    return throw(
+        ArgumentError(
+            "cyclic monitor dependency among $names:\n" * join(lines, "\n") * "\n" *
+                "Every edge above carries a MONITOR, which its source computes from that " *
+                "component's staged parameter slots — so each edge orders its source before " *
+                "its destination, and together they order a component before itself. Two ways " *
+                "out, and which applies depends on the equations, not on the graph: (1) if any " *
+                "one of these quantities is also available as a STATE of its source component, " *
+                "wire that state instead — a state source is read live from the global state " *
+                "vector and imposes no order, breaking the cycle; (2) if each quantity " *
+                "genuinely needs the others' values within the same evaluation, this is an " *
+                "algebraic loop and cannot be solved as posed — restate the coupling, by " *
+                "promoting one quantity to an integrated state, or by carrying the contested " *
+                "flux on an accumulating share (`share(...; op = +)`), which imposes no " *
+                "ordering at all."
+        ),
+    )
+end
+
+# Components sourcing at least one monitor, each with its slice of the coupling's flat monitor
+# scratch, in TOPOLOGICAL order over monitor-sourced edges (see `_monitor_component_order`) — the
+# pre-pass stages and evaluates in this order, so it is semantically load-bearing, not cosmetic.
+# `_entry` resolves monitor edges against the same `offsets` map, so the two stay consistent.
+# Empty when no edge sources a monitor — then the pre-pass is a `Tuple{}` method and compiles
+# away entirely.
+function _build_monitor_plan(components::NamedTuple, connects::Tuple, layout)
+    mon_comps = Symbol[]
+    for cn in connects
+        _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
+        cn.src in mon_comps || push!(mon_comps, cn.src)
+    end
+    order = _monitor_component_order(components, connects, mon_comps)
     offsets = Dict{Symbol, Int}()
     total = 0
     for ck in order
