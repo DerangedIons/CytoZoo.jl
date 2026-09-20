@@ -1091,3 +1091,50 @@ end
         @test (@allocated cm(dU, U, nothing, 0.0)) == 0
     end
 end
+
+@testset "couple — a genuine monitor cycle is rejected by name" begin
+    # Each component's monitor reads the slot the other's monitor feeds: an algebraic loop, and
+    # the case the deleted blanket rule used to catch by accident.
+    err = try
+        couple(
+            [Subsystem(_DerivedReceiver(); name = :M1), Subsystem(_DerivedReceiver(); name = :M2)],
+            [connect(:M1 => :b, :M2 => :in), connect(:M2 => :b, :M1 => :in)],
+        )
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("cyclic monitor dependency", msg)
+    @test occursin(":M1", msg) && occursin(":M2", msg)
+    # The edges that form the cycle are named, in both directions, so the message says what to
+    # break rather than that something is wrong.
+    @test occursin("connect(:M1 => :b, :M2 => :in)", msg)
+    @test occursin("connect(:M2 => :b, :M1 => :in)", msg)
+    # Both readings are offered, because component granularity cannot tell them apart.
+    @test occursin("STATE", msg) && occursin("algebraic loop", msg)
+
+    # A one-node cycle: a component's monitor feeding its own staged slot.
+    @test_throws ArgumentError couple(
+        [Subsystem(_DerivedReceiver(); name = :M), Subsystem(_MonoReader(); name = :R)],
+        [connect(:M => :b, :M => :in), connect(:M => :b, :R => :d_ext)],
+    )
+
+    # NOT a cycle: the back edge carries a STATE, read live from U, so it orders nothing. This is
+    # the narrowing — the old blanket rule rejected this graph too.
+    @test couple(
+        [Subsystem(_DerivedReceiver(); name = :M), Subsystem(_MonoReader(); name = :R)],
+        [connect(:M => :b, :R => :d_ext), connect(:R => :acc, :M => :in)],
+    ) isa CytoZoo.CoupledModel
+
+    # NOT a cycle: a three-component chain, which is a DAG however the edges are declared.
+    @test couple(
+        [
+            Subsystem(_MonoDerived(); name = :S),
+            Subsystem(_DerivedReceiver(); name = :M),
+            Subsystem(_MonoReader(); name = :R),
+        ],
+        [connect(:M => :b, :R => :d_ext), connect(:S => :b, :M => :in)],
+    ) isa CytoZoo.CoupledModel
+end
