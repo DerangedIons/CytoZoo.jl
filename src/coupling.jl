@@ -205,10 +205,11 @@ same slot is rejected at `couple` time. Other `op`s are not supported.
 
 Monitor sources cost one `monitor_values!` call per sourcing component per evaluation, which
 computes that model's **whole** monitor vector — wiring one monitor of a model with many pays
-for all of them. A component that sources a monitor may not itself receive a `connect` edge
-(rejected at `couple` time): its monitors are computed before the component walk stages any
-parameters, so a monitor reading a staged slot would silently see the previous evaluation's
-value.
+for all of them. A component that sources a monitor may itself receive `connect` edges: the
+pre-pass stages each monitor-sourcing component's inputs immediately before evaluating its
+monitors, walking them in dependency order, so a monitor reading a staged slot sees the current
+evaluation's value. What is rejected, at `couple` time, is a *cycle* — monitor edges that order
+a component before itself, which is an algebraic loop rather than a feedthrough.
 
 Under an implicit solver the connect input — state- or monitor-sourced alike — is frozen to its
 primal within each Newton step (see `ext/ForwardDiffExt.jl`): a correct fixed point but an
@@ -410,7 +411,11 @@ function _validate_specs(components::NamedTuple, shares::Tuple, connects::Tuple)
             throw(ArgumentError("connect target :$(cn.dst) has no parameter slot :$(cn.dst_slot)"))
     end
     _check_connect_op_conflicts(connects)
-    _check_monitor_source_receivers(components, connects)
+    # A monitor source that also RECEIVES a connect edge used to be rejected here outright: the
+    # pre-pass ran before any staging, so such a monitor would have read the previous
+    # evaluation's value. The pre-pass now stages each component immediately before evaluating
+    # its monitors, in topological order (`_monitor_component_order`), so the overlap is exact
+    # for any acyclic graph — and `_build_monitor_plan` rejects the cyclic ones by name.
     return nothing
 end
 
@@ -435,27 +440,6 @@ function _resolve_source(model, comp::Symbol, name::Symbol)
                 "monitors $(monitor_names(model)))"
         ),
     )
-end
-
-# A monitor-sourcing component's monitors are computed in one pre-pass, before the component walk
-# stages any connect input. If such a component also *received* an edge, a monitor of its that
-# read the staged slot would see the previous evaluation's value — a silent one-eval lag. The
-# overlap is rejected rather than lag-checked, since "does this monitor read that slot" is not
-# statically knowable.
-function _check_monitor_source_receivers(components::NamedTuple, connects::Tuple)
-    dsts = map(cn -> cn.dst, connects)
-    for cn in connects
-        _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
-        cn.src in dsts && throw(
-            ArgumentError(
-                "component :$(cn.src) sources the monitor :$(cn.src_state) and also receives a " *
-                    "connect edge; monitors are computed before any parameter is staged, so a " *
-                    "monitor reading a staged slot would lag by one evaluation. Source the " *
-                    "monitor from a component that receives no edges, or split the model."
-            ),
-        )
-    end
-    return nothing
 end
 
 # A connect receiver satisfies `writable_parameters` if it has the default `parameters` field
