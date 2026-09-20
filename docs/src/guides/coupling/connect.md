@@ -189,9 +189,12 @@ Three things to know:
   component declaring the same name in both is rejected at `couple()` time as ambiguous.
 - **Cost.** `monitor_values!` computes a model's *whole* monitor vector, once per evaluation per
   sourcing component. Wiring one monitor of a model with hundreds pays for all of them.
-- **A monitor source cannot also receive an edge.** Monitors are computed in a single pass
-  before any parameter is staged, so a monitor reading a staged slot would see the previous
-  evaluation's value. `couple()` rejects the overlap rather than lagging silently.
+- **A monitor source may also receive an edge; a monitor *cycle* may not exist.** Monitors are
+  computed in a pre-pass that stages each monitor-sourcing component immediately before
+  evaluating it, in dependency order, so a monitor reading a staged slot sees this evaluation's
+  value — a feedthrough (`A`'s state → `B`'s monitor → back into `A`) is exact. Monitor edges
+  that order a component before itself are rejected at `couple()` time, by component, with the
+  forming edges named.
 
 `share` is unaffected by any of this: it merges *states*, and a monitor has no derivative to
 own. Naming one as a share endpoint is an error.

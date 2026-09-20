@@ -106,11 +106,18 @@ monitor vector, once per evaluation per sourcing component. A model with a handf
 costs nothing measurable; a model with hundreds pays for all of them to deliver one. Splitting
 that into per-monitor access is a possible future addition, not a current property.
 
-**A monitor source cannot also receive a `connect` edge.** The monitor pre-pass runs before the
-component walk stages any parameter, so a monitor that read a staged slot would see the
-*previous* evaluation's value. Since "does this monitor read that slot" is not knowable
-statically, `couple()` rejects the overlap outright rather than risk a silent one-evaluation
-lag. Source the monitor from a component that receives no edges, or split the model.
+**A monitor source may receive a `connect` edge, but monitor edges must not form a cycle.** The
+pre-pass stages each monitor-sourcing component's inputs immediately before evaluating its
+monitors, walking those components in dependency order, so a monitor that reads a staged slot
+sees the current evaluation's value. That makes a *feedthrough* exact — `A`'s state drives `B`,
+and `B`'s monitor feeds back into `A`, all within one evaluation.
+
+What `couple` rejects is a *cycle*: monitor edges that order a component before itself. The
+check is at **component** granularity, because `monitor_values!` fills a model's whole monitor
+vector in one call and which monitor reads which staged slot is not knowable statically. So two
+components whose monitors feed each other are rejected even if the individual monitors involved
+would not actually have read the contested slots — conservative, and the error names the edges
+that form the cycle.
 
 ## Other Constraints
 
@@ -138,7 +145,7 @@ model has been run or tested on a device.
 | A contributor's initial value is discarded | correctness trap | `share(…; op = +)` |
 | A model that accumulates into its own `du` double-counts | **silent incorrectness** | `share(…; op = +)` |
 | A derived source costs its model's whole monitor vector | performance | `connect` |
-| A monitor source cannot also receive an edge | expressiveness | `connect` |
+| Monitor-edge cycles rejected conservatively (component granularity) | build-time rejection | `connect` |
 | No DAE coupling | scope | all |
 
 ## See Also
