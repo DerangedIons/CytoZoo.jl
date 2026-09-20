@@ -1138,3 +1138,70 @@ end
         [connect(:M => :b, :R => :d_ext), connect(:S => :b, :M => :in)],
     ) isa CytoZoo.CoupledModel
 end
+
+@testset "couple — feedthrough under the awkward inputs" begin
+    feed_nodes() = [Subsystem(_FeedEP(); name = :EP), Subsystem(_DerivedReceiver(); name = :M)]
+    feed_edges() = [connect(:EP => :c, :M => :in), connect(:M => :b, :EP => :jt)]
+
+    # ForwardDiff: the pre-pass now stages into a Float64 parameter vector BEFORE monitors run,
+    # so a Dual-valued U must still be reduced to its primal there or the write throws.
+    #
+    # And the result pins how much of this coupling the Jacobian omits. `_connect_value` freezes
+    # every connect input to its primal inside a Newton step, so BOTH legs of the feedthrough
+    # vanish from J: the true d(c)/dt = -1.5c + M_a, but J[1,1] = -0.5 (the model's own term
+    # only) and J[1,2] = 0; d(M_a)/dt = c is entirely staged, so its whole row is zero. Correct
+    # fixed point, approximate Jacobian — documented `connect` behaviour that this work does NOT
+    # change, asserted here because W3-01 flagged it for ADR-0008/W5-03: expect degraded Newton
+    # convergence on a stiff coupling, and treat any ForwardDiff sensitivity taken through this
+    # edge as incorrect rather than merely inexact.
+    cm = couple(feed_nodes(), feed_edges())
+    U = default_initial_state(cm)
+    J = ForwardDiff.jacobian(u -> (d = similar(u); cm(d, u, nothing, 0.0); d), U)
+    @test all(isfinite, J)
+    @test J == [-0.5 0.0; 0.0 0.0]
+
+    # `op = +` into a monitor-sourcing receiver. The pre-pass zeroes the slot and accumulates,
+    # then the component walk stages it AGAIN — a non-idempotent staging double-counts here, and
+    # would do it silently.
+    cm_add = couple(
+        [
+            Subsystem(_MonoDerived(); name = :S),
+            Subsystem(_DerivedReceiver(); name = :M),
+            Subsystem(_MonoReader(); name = :R),
+        ],
+        [
+            connect(:S => :b, :M => :in; op = +),
+            connect(:S => :ag, :M => :in; op = +),
+            connect(:M => :b, :R => :d_ext),
+        ],
+    )
+    Ua = default_initial_state(cm_add)             # [a, g, M_a, R_acc] = [3.0, 1.0, 1.0, 0.0]
+    dUa = similar(Ua)
+    # in = (8 - a) + (a + g) = 8 + g; M.b = in - M_a; d(M_a)/dt = in; d(R_acc)/dt = M.b
+    inv = 8.0 + Ua[2]
+    cm_add(dUa, Ua, nothing, 0.0)
+    @test dUa ≈ [-Ua[1], 0.0, inv, inv - Ua[3]]
+    cm_add(dUa, Ua, nothing, 0.0)                  # cross-sectional, not a running total
+    @test dUa ≈ [-Ua[1], 0.0, inv, inv - Ua[3]]
+    @test (@allocated cm_add(dUa, Ua, nothing, 0.0)) == 0
+
+    # `gain` on both legs of the feedthrough. The pre-pass and the walk must scale identically,
+    # or the answer depends on which staging ran last.
+    cm_g = couple(
+        feed_nodes(),
+        [connect(:EP => :c, :M => :in; gain = 2.0), connect(:M => :b, :EP => :jt; gain = 0.5)],
+    )
+    Ug = [2.0, 1.0]
+    dUg = similar(Ug)
+    cm_g(dUg, Ug, nothing, 0.0)
+    b = 2.0 * Ug[1] - Ug[2]                        # M.b = in - M_a, in = 2c
+    @test dUg ≈ [-0.5 * Ug[1] - 0.5 * b, 2.0 * Ug[1]]
+
+    # Element-type genericity: the coupling must compute in the state vector's element type.
+    Uf = Float32[2.0, 1.0]
+    dUf = similar(Uf)
+    cm32 = couple(feed_nodes(), feed_edges())
+    cm32(dUf, Uf, nothing, 0.0f0)
+    @test eltype(dUf) === Float32
+    @test dUf ≈ Float32[-0.5f0 * Uf[1] - (Uf[1] - Uf[2]), Uf[1]]
+end
