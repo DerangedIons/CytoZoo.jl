@@ -194,7 +194,10 @@ Three things to know:
   evaluating it, in dependency order, so a monitor reading a staged slot sees this evaluation's
   value — a feedthrough (`A`'s state → `B`'s monitor → back into `A`) is exact. Monitor edges
   that order a component before itself are rejected at `couple()` time, by component, with the
-  forming edges named.
+  forming edges named. Two limits: the exactness is in the *value*, not the Jacobian (a
+  feedthrough is a `connect`, so the AD caveat below applies to both its legs), and it does not
+  reach inside a nested `CoupledModel` that sources a monitor and has edges of its own — that
+  still lags, undetected. See [Limitations](limitations.md).
 
 `share` is unaffected by any of this: it merges *states*, and a monitor has no derivative to
 own. Naming one as a share endpoint is an error.

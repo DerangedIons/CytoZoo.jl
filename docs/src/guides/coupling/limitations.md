@@ -119,6 +119,14 @@ components whose monitors feed each other are rejected even if the individual mo
 would not actually have read the contested slots — conservative, and the error names the edges
 that form the cycle.
 
+Two caveats on that exactness. The ordering is exact in **value**, not in the Jacobian: a
+feedthrough is still a `connect`, so under an implicit solver both legs are frozen to their
+primal and the coupling contributes nothing to Newton's Jacobian (see the first section of this
+page). And the guarantee stops at the component boundary — a **nested `CoupledModel`** that
+sources a monitor and carries `connect` edges of its own still lags by one evaluation, because
+its inner components are staged by its own walk, which runs after the outer pre-pass has already
+asked it for its monitors. `couple` does not currently detect that case.
+
 ## Other Constraints
 
 **No DAE or algebraic-constraint coupling.** Every component must be an ODE. Coupling that

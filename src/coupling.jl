@@ -1080,8 +1080,17 @@ end
 # inputs and then fill its slice of the flat monitor scratch from its own `monitor_values!`.
 # Interleaved, not two-phase: staging a component can need another component's monitor (a monitor
 # chain), so "stage everything, then monitor everything" reads a stale slot. The topological order
-# guarantees every value staged here is final — a monitor feeding this component was computed on
-# an earlier iteration, and a state source is read live from U.
+# guarantees every value staged here is final FOR THIS GRAPH'S OWN EDGES — a monitor feeding this
+# component was computed on an earlier iteration, and a state source is read live from U.
+#
+# The guarantee stops at the component boundary. A component whose `monitor_values!` depends on
+# state this coupling does not stage — most concretely a NESTED `CoupledModel` that sources a
+# monitor and has connect edges of its own — still lags: its inner components are staged by its
+# own `_run!`, which runs in the outer component walk, after this pre-pass has already called
+# `monitor_values!` on it. `_monitor_component_order` cannot see inside a component, so it cannot
+# order what it cannot see. That is pre-existing behaviour (the blanket rejection this replaces
+# never caught it either — a nested coupling sources a monitor without being a `dst`), and it is
+# NOT fixed here; it wants its own conservative rejection, which is a separate semantics change.
 #
 # Monitors are algebraic in (U, t) and U does not change during an evaluation, so computing them
 # once up front is exactly equivalent to recomputing per receiver, and cheaper. The source's state

@@ -969,6 +969,16 @@ end
     @test CytoZoo._monitor_component_order(comps, indep, [:S, :D]) == [:S, :D]
     @test CytoZoo._monitor_component_order(comps, indep, [:D, :S]) == [:D, :S]
 
+    # ...and the same, with a REAL constraint present so the Kahn loop actually runs. The case
+    # above short-circuits on `isempty(edges)` and never reaches the tie-break, so on its own it
+    # would stay green if `first(ready)` regressed to any other choice among simultaneously
+    # ready nodes. Here :S must precede :D while :D2 is unconstrained and ready from the start:
+    # a stable sort emits the earliest ready node, so :D2's position follows mon_comps.
+    tie = (connect(:S => :b, :D => :in), connect(:D2 => :b, :R => :d_ext))
+    @test CytoZoo._monitor_component_order(comps, tie, [:S, :D, :D2]) == [:S, :D, :D2]
+    @test CytoZoo._monitor_component_order(comps, tie, [:D2, :S, :D]) == [:D2, :S, :D]
+    @test CytoZoo._monitor_component_order(comps, tie, [:D, :D2, :S]) == [:D2, :S, :D]
+
     # A genuine cycle: each component's monitor feeds a slot the other's monitor may read.
     cyc = (connect(:D => :b, :D2 => :in), connect(:D2 => :b, :D => :in))
     err = try
@@ -1197,11 +1207,23 @@ end
     b = 2.0 * Ug[1] - Ug[2]                        # M.b = in - M_a, in = 2c
     @test dUg ≈ [-0.5 * Ug[1] - 0.5 * b, 2.0 * Ug[1]]
 
-    # Element-type genericity: the coupling must compute in the state vector's element type.
+    # A non-Float64 state vector evaluates without error and to the right values.
     Uf = Float32[2.0, 1.0]
     dUf = similar(Uf)
     cm32 = couple(feed_nodes(), feed_edges())
     cm32(dUf, Uf, nothing, 0.0f0)
-    @test eltype(dUf) === Float32
-    @test dUf ≈ Float32[-0.5f0 * Uf[1] - (Uf[1] - Uf[2]), Uf[1]]
+    @test dUf == Float32[-0.5f0 * Uf[1] - (Uf[1] - Uf[2]), Uf[1]]
+
+    # ...but the monitor path is NOT element-type generic, and this pins the gap rather than
+    # implying it is covered. `couple` sizes both scratches from `eltype(layout.u0)`, and `u0`
+    # comes from `default_initial_state`, which is Float64 — so a Float32 solve still routes its
+    # monitors and staged inputs through Float64 storage. Asserting `eltype(dUf) === Float32`
+    # here would prove nothing: `similar(Uf)` guarantees it whatever the coupling does.
+    #
+    # PRE-EXISTING, not introduced by the ordered pre-pass (baseline `_monitors!` allocates the
+    # same scratches). Left as-is deliberately: it is W4-03's Float32/GPU criterion to satisfy,
+    # and widening it here would be an unrelated semantics change. Flip these to `=== Float32`
+    # when that work lands.
+    @test eltype(cm32.monitor_scratch) === Float64
+    @test eltype(cm32.source_scratch) === Float64
 end

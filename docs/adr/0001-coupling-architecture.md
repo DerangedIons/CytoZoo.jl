@@ -126,3 +126,11 @@ cycles on graphs that neither set rejects.
 Granularity is per **component**, not per monitor, because `monitor_values!` fills a model's whole
 monitor vector in one opaque call. The cycle check is therefore conservative; it is still
 strictly more permissive than the rule it replaces.
+
+Two limits are worth stating alongside it. The ordering is exact in value, not in the Jacobian:
+a feedthrough is still a `connect`, so under an implicit solver both its legs are frozen to their
+primal. And it does not reach inside a component — a nested `CoupledModel` that sources a monitor
+and carries its own `connect` edges still lags by one evaluation, because its inner walk stages
+after the outer pre-pass has already asked it for its monitors. That case is pre-existing (the
+blanket rejection did not catch it either) and is not detected; a conservative rejection for it
+is separate work.
