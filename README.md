@@ -41,10 +41,10 @@ Other things that might matter to you:
 
 ```julia
 using Pkg
-Pkg.add("CytoZoo")
+Pkg.add(url = "https://github.com/DerangedIons/CytoZoo.jl", rev = "v0.1.0")
 ```
 
-Requires Julia 1.10 or later.
+CytoZoo is not yet in the General registry, so install it from the tagged release. Requires Julia 1.10 or later.
 
 ## Quick Start
 

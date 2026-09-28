@@ -1,6 +1,6 @@
 name = "CytoZoo"
 uuid = "ff4ab244-b974-488c-a5cc-2c6c87261b37"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Kyle Beggs (beggskw@gmail.com) and contributors"]
 
 [weakdeps]
