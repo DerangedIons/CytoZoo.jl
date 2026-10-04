@@ -13,6 +13,7 @@ export AbstractStimulus, Stimulus, FunctionStimulus
 export num_states, num_parameters, transmembrane_potential_index, default_initial_state
 export has_rush_larsen, rush_larsen_step!
 export state_index, parameter_index, state_names, parameter_names, writable_parameters
+export resolve_parameter
 export num_monitors, monitor_names, monitor_values!
 export ClampedCell, seed!, base_model
 export couple, CoupledModel, Subsystem, share, connect, overwrite

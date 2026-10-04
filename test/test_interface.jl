@@ -52,3 +52,18 @@ end
     m3 = ToRORd(; celltype = 2)
     @test m3.celltype == 2
 end
+
+@testset "resolve_parameter is public API" begin
+    @test isdefined(CytoZoo, :resolve_parameter)
+    @test resolve_parameter(1.0, nothing, Val(:GNa), nothing, 0.0) == 1.0
+
+    ov = (GNa = 2.5,)
+    @test resolve_parameter(1.0, ov, Val(:GNa), nothing, 0.0) == 2.5
+    @test resolve_parameter(1.0, ov, Val(:other), nothing, 0.0) == 1.0
+
+    ov_f = (GNa = (x, t) -> 3.0,)
+    @test resolve_parameter(1.0, ov_f, Val(:GNa), [0.0], 0.0) == 3.0
+
+    # The private name keeps working, so nothing in-tree breaks.
+    @test CytoZoo._resolve_parameter(1.0, ov, Val(:GNa), nothing, 0.0) == 2.5
+end
