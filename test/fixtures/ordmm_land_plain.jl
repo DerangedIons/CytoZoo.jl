@@ -1,8 +1,3 @@
-# Generated fixture — do not hand-edit. Regenerate with:
-#   /workspaces/main_repo/.venv/bin/gotranx ode2julia \
-#       /workspaces/main_repo/third-party/gotranx/tests/odefiles/ORdmm_Land.ode \
-#       -o test/fixtures/ordmm_land_plain
-# (run from third-party/CytoZoo.jl)
 
 const NUM_STATES = 48;
 const NUM_PARAMS = 139;

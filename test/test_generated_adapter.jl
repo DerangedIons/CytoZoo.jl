@@ -1,6 +1,24 @@
 # The generated adapter, exercised against the real interface. The fixtures are
-# committed because this repo's CI has no Python; regenerate with the command in
-# each fixture's header.
+# committed because this repo's CI has no Python.
+#
+# They come to roughly 5,200 lines between them, which is not carelessness: about
+# 2,000 of those are the plain fixture's string-keyed `parameter_index`/
+# `state_index`/`monitor_index` chains -- one `if name == "..."` branch per name,
+# which `ode2julia` always emits and no test here calls. They are kept because the
+# plain fixture has to stay byte-for-byte what `ode2julia` produces, which is the
+# whole point of comparing against it.
+#
+# Regenerate both, from this directory:
+#
+#   /workspaces/main_repo/.venv/bin/gotranx ode2cytozoo \
+#       /workspaces/main_repo/third-party/gotranx/tests/odefiles/ORdmm_Land.ode \
+#       -o test/fixtures/ordmm_land_cytozoo --model-name ORdmmLand
+#   /workspaces/main_repo/.venv/bin/gotranx ode2julia \
+#       /workspaces/main_repo/third-party/gotranx/tests/odefiles/ORdmm_Land.ode \
+#       -o test/fixtures/ordmm_land_plain
+#
+# The CytoZoo fixture carries its own generator-emitted banner; the plain one
+# carries none, because it must match `ode2julia` output exactly.
 
 module GeneratedCytoZoo
 include("fixtures/ordmm_land_cytozoo.jl")
