@@ -43,7 +43,7 @@ parameter_index(model, :IKr_Multiplier)
 
 ## Three Kinds of Spatial Function
 
-An override value can be any of three things, resolved internally by the same helper:
+An override value can be any of three things, all resolved by [`resolve_parameter`](@ref):
 
 **A scalar** — a uniform override, no position dependence. Useful for setting a value once
 without mutating the shared parameter vector:

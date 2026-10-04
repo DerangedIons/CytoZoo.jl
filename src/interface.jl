@@ -238,7 +238,9 @@ name and signature are a compatibility surface. `name in names` folds at compile
     return name in names ? _resolve_spatial(getfield(overrides, name), x, t) : fallback
 end
 
-# Pre-2.x internal name, kept so in-tree callers and any external user keep working.
+# The name this function had while it was private, kept as an alias so the in-tree
+# call sites and anyone who reached for it keep working. New code should use
+# `resolve_parameter`.
 const _resolve_parameter = resolve_parameter
 
 """
