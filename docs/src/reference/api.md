@@ -64,6 +64,7 @@ monitor_history
 ```@docs
 SpatialContext
 SpatialFunction
+resolve_parameter
 Constant
 SpatialStep
 SpatialGradient

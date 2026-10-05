@@ -6,7 +6,7 @@ FitzHugh–Nagumo right-hand side, shared by both functor dispatches.
     dv/dt = v(1 - v)(v - a) - s - Iₛₜᵢₘ
     ds/dt = e(b·v - c·s - d)
 
-Every parameter is spatially overridable through `_resolve_parameter`, which dispatches
+Every parameter is spatially overridable through `resolve_parameter`, which dispatches
 the `overrides === nothing` case away so the non-spatial call emits exactly the five
 struct-field loads and no branch.
 """
