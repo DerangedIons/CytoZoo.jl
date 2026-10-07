@@ -105,3 +105,32 @@ path — no consumer justified maintaining a second, strictly less accurate solv
   `git show 25512c6:handoffs/2026-06-25-1515-coupling-monolithic-rhs.md`.
 - Code-level tour: `handoffs/2026-07-16-0745-coupling-infrastructure-tour.md`.
 - Coupling taxonomy and API backlog: `examples/coupling_mwe.md`.
+
+## Amendment — 2026-09-20: monitor evaluation is ordered, not banned
+
+The original monitor-source design computed every monitor in one pass before any parameter was
+staged, and rejected any component that both sourced a monitor and received a `connect` edge,
+because such a monitor would have read the previous evaluation's value.
+
+That rejection was a superset of the unsafe cases. It refused *feedthrough* — `A`'s state drives
+`B`, `B`'s monitor feeds back into `A` — which is exact when evaluated in dependency order, and
+is the shape of calcium/troponin coupling between an electrophysiology model and a contraction
+model.
+
+The pre-pass now walks monitor-sourcing components in topological order over monitor-sourced
+edges, staging each component's inputs immediately before evaluating its monitors. `couple`
+rejects only a genuine cycle. The sort is kept separate from `_operator_order`: share-owner
+precedence and monitor dataflow are independent constraint sets, and a single merged sort reports
+cycles on graphs that neither set rejects.
+
+Granularity is per **component**, not per monitor, because `monitor_values!` fills a model's whole
+monitor vector in one opaque call. The cycle check is therefore conservative; it is still
+strictly more permissive than the rule it replaces.
+
+Two limits are worth stating alongside it. The ordering is exact in value, not in the Jacobian:
+a feedthrough is still a `connect`, so under an implicit solver both its legs are frozen to their
+primal. And it does not reach inside a component — a nested `CoupledModel` that sources a monitor
+and carries its own `connect` edges still lags by one evaluation, because its inner walk stages
+after the outer pre-pass has already asked it for its monitors. That case is pre-existing (the
+blanket rejection did not catch it either) and is not detected; a conservative rejection for it
+is separate work.

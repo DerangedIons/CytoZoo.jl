@@ -205,6 +205,23 @@ CytoZoo.monitor_names(::_DerivedReceiver) = (:b,)
 CytoZoo.monitor_values!(mon, u, t, m::_DerivedReceiver) = (mon[1] = m.parameters[1] - u[1]; nothing)
 (m::_DerivedReceiver)(du, u, p, t) = (du[1] = m.parameters[1]; nothing)
 
+# The EP half of the feedthrough topology CardiacElectromechanics needs (ADR-0004): it sources a
+# STATE that drives a mechanics model, and consumes that model's monitor back as a flux. Paired
+# with `_DerivedReceiver` (which sources a monitor AND reads its own staged slot) this is exactly
+# `cai -> J_TRPN -> d(cai)/dt`. The parameter default is deliberately absurd, so a stale read
+# shows up as garbage rather than as a plausible number.
+struct _FeedEP <: CytoZoo.AbstractCardiacCellModel
+    parameters::Vector{Float64}
+end
+_FeedEP() = _FeedEP([-99.0])
+CytoZoo.num_states(::_FeedEP) = 1
+CytoZoo.state_names(::_FeedEP) = (:c,)
+CytoZoo.default_initial_state(::_FeedEP) = [2.0]
+CytoZoo.state_index(::_FeedEP, n::Symbol) = findfirst(==(n), (:c,))
+CytoZoo.transmembrane_potential_index(::_FeedEP) = 1
+CytoZoo.parameter_index(::_FeedEP, n::Symbol) = n === :jt ? 1 : nothing
+(m::_FeedEP)(du, u, p, t) = (du[1] = -0.5 * u[1] - m.parameters[1]; nothing)
+
 # Reports more state names than its initial-state vector has entries — `couple` must reject
 # this at construction rather than emitting a BoundsError from inside the layout loop.
 struct _BadLength <: CytoZoo.AbstractCardiacCellModel end
@@ -775,12 +792,20 @@ end
         [Subsystem(_AmbiguousName(); name = :X), Subsystem(_MonoReader(); name = :R)],
         [connect(:X => :s, :R => :d_ext)],
     )
-    # A monitor source that also receives an edge would compute its monitors from last eval's
-    # staged parameters — rejected rather than silently lagged.
-    @test_throws ArgumentError couple(
+    # SEMANTICS CHANGE (W3-02/W3-03): a monitor source that also receives an edge was rejected
+    # outright, because the pre-pass ran before any staging. The pre-pass now stages each
+    # component immediately before evaluating its monitors, in topological order, so this graph
+    # is accepted and exact; only a genuine cycle is rejected (see the cycle testset below).
+    # Here :D's monitor reads the slot :R's STATE feeds, which imposes no order at all.
+    cm_overlap = couple(
         [Subsystem(_DerivedReceiver(); name = :D), Subsystem(_MonoReader(); name = :R)],
         [connect(:D => :b, :R => :d_ext), connect(:R => :acc, :D => :in)],
     )
+    U_ov = [1.5, 0.75]                            # [a, R_acc]
+    dU_ov = similar(U_ov)
+    cm_overlap(dU_ov, U_ov, nothing, 0.0)
+    # D.b = R_acc - a; d(a)/dt = R_acc; d(R_acc)/dt = D.b
+    @test dU_ov ≈ [0.75, 0.75 - 1.5]
     # ...but receiving an edge is fine when the component sources no monitor.
     @test couple(
         [Subsystem(_DerivedReceiver(); name = :D), Subsystem(_MonoReader(); name = :R)],
@@ -914,4 +939,291 @@ end
             share(:J2 => :v, :J => :v; owner = :J2, op = +, gain = 0.5),
         ],
     )
+end
+
+# --- monitor dependency order (W3-02) -------------------------------------------------------
+#
+# The pre-pass's component order is a topological sort over monitor-sourced connect edges
+# between monitor-sourcing components. Exercised directly: while the blanket monitor-receive
+# rejection stands, no `couple()`-able graph carries an ordering constraint at all.
+
+@testset "coupling — monitor component order" begin
+    comps = (
+        S = _MonoDerived(), D = _DerivedReceiver(), R = _MonoReader(), D2 = _DerivedReceiver(),
+    )
+
+    # :S's monitor feeds :D, which itself sources a monitor -> :S must precede :D, whatever
+    # order the edges were declared in.
+    fwd = (connect(:S => :b, :D => :in), connect(:D => :b, :R => :d_ext))
+    rev = (connect(:D => :b, :R => :d_ext), connect(:S => :b, :D => :in))
+    @test CytoZoo._monitor_component_order(comps, fwd, [:S, :D]) == [:S, :D]
+    @test CytoZoo._monitor_component_order(comps, rev, [:D, :S]) == [:S, :D]
+
+    # A STATE-sourced edge into a monitor source imposes no order: states are read live from U.
+    state_back = (connect(:D => :b, :R => :d_ext), connect(:R => :acc, :D => :in))
+    @test CytoZoo._monitor_component_order(comps, state_back, [:D]) == [:D]
+
+    # Unconstrained sources keep declaration order, so monitor_scratch offsets do not shift
+    # with an irrelevant permutation of the edge list.
+    indep = (connect(:S => :b, :R => :d_ext), connect(:D => :b, :R => :d_ext))
+    @test CytoZoo._monitor_component_order(comps, indep, [:S, :D]) == [:S, :D]
+    @test CytoZoo._monitor_component_order(comps, indep, [:D, :S]) == [:D, :S]
+
+    # ...and the same, with a REAL constraint present so the Kahn loop actually runs. The case
+    # above short-circuits on `isempty(edges)` and never reaches the tie-break, so on its own it
+    # would stay green if `first(ready)` regressed to any other choice among simultaneously
+    # ready nodes. Here :S must precede :D while :D2 is unconstrained and ready from the start:
+    # a stable sort emits the earliest ready node, so :D2's position follows mon_comps.
+    tie = (connect(:S => :b, :D => :in), connect(:D2 => :b, :R => :d_ext))
+    @test CytoZoo._monitor_component_order(comps, tie, [:S, :D, :D2]) == [:S, :D, :D2]
+    @test CytoZoo._monitor_component_order(comps, tie, [:D2, :S, :D]) == [:D2, :S, :D]
+    @test CytoZoo._monitor_component_order(comps, tie, [:D, :D2, :S]) == [:D2, :S, :D]
+
+    # A genuine cycle: each component's monitor feeds a slot the other's monitor may read.
+    cyc = (connect(:D => :b, :D2 => :in), connect(:D2 => :b, :D => :in))
+    err = try
+        CytoZoo._monitor_component_order(comps, cyc, [:D, :D2])
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("cyclic monitor dependency", msg)
+    @test occursin("connect(:D => :b, :D2 => :in)", msg)
+    @test occursin("connect(:D2 => :b, :D => :in)", msg)
+
+    # A self-edge is a one-node cycle and must not be sorted past.
+    selfcyc = (connect(:D => :b, :D => :in),)
+    @test_throws ArgumentError CytoZoo._monitor_component_order(comps, selfcyc, [:D])
+end
+
+@testset "coupling — monitor pre-pass carries its own staging" begin
+    # A monitor source with no incoming edges stages nothing: every staging field is empty and
+    # `params` is `nothing`, so `_connect!` hits its no-op method and the pre-pass is unchanged.
+    cm = couple(
+        [Subsystem(_MonoDerived(); name = :D), Subsystem(_MonoReader(); name = :R)],
+        [connect(:D => :b, :R => :d_ext)],
+    )
+    e = only(cm.monitor_plan)
+    @test e.params === nothing
+    @test e.overwrites === () && e.adds === ()
+    @test e.monitor_overwrites === () && e.monitor_adds === ()
+
+    # The pre-pass entry and the walk entry for one component bind the SAME parameter vector —
+    # the private deepcopy `couple` made — so the two stagings cannot disagree.
+    cm2 = couple(
+        [Subsystem(_MonoA(); name = :A), Subsystem(_MonoReader(); name = :R)],
+        [connect(:A => :d, :R => :d_ext)],
+    )
+    walk_R = only(filter(en -> en.model isa _MonoReader, collect(cm2.plan)))
+    @test walk_R.params === CytoZoo.writable_parameters(cm2.components.R)
+
+    # And the untouched path stays allocation-free.
+    U = default_initial_state(cm)
+    dU = similar(U)
+    cm(dU, U, nothing, 0.0)
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0
+end
+
+# --- feedthrough: a monitor source that also receives an edge (W3-02 / ADR-0004) -------------
+#
+# `cai -> J_TRPN -> d(cai)/dt` is a FEEDTHROUGH, not an algebraic loop: the monitor depends on
+# the staged input and on its own component's states, never on the derivative it feeds. Ordered
+# and staged, it is exact in one evaluation.
+
+@testset "couple — feedthrough monitor source is exact" begin
+    # :EP sources state :c into :M's :in; :M sources monitor :b = in - a back into :EP's :jt.
+    cm = couple(
+        [Subsystem(_FeedEP(); name = :EP), Subsystem(_DerivedReceiver(); name = :M)],
+        [connect(:EP => :c, :M => :in), connect(:M => :b, :EP => :jt)],
+    )
+    U = default_initial_state(cm)                 # [c, M_a] = [2.0, 1.0]
+    dU = similar(U)
+
+    # Exact, by hand: b = c - M_a; d(c)/dt = -0.5c - b; d(M_a)/dt = in = c.
+    exact(u) = [-0.5 * u[1] - (u[1] - u[2]), u[1]]
+
+    cm(dU, U, nothing, 0.0)
+    @test dU ≈ exact(U)
+
+    # THE decisive property: the assembled RHS is a function of (U, t) alone. A lagged monitor
+    # passes a repeat call at the same U and fails this one — an adaptive solver's rejected
+    # steps and Jacobian probes are exactly these intervening evaluations.
+    first_call = copy(dU)
+    cm(dU, [9.9, 9.9], nothing, 0.0)              # a probe at some other U
+    cm(dU, U, nothing, 0.0)
+    @test dU == first_call
+    @test dU ≈ exact(U)
+
+    # And at a second, unrelated state, so the test cannot pass on the initial condition alone.
+    U2 = [0.3, 7.5]
+    cm(dU, U2, nothing, 0.0)
+    @test dU ≈ exact(U2)
+
+    cm(dU, U, nothing, 0.0)                       # warm up
+    @test (@allocated cm(dU, U, nothing, 0.0)) == 0
+end
+
+@testset "couple — monitor chain stages in dependency order" begin
+    # :S -(monitor)-> :M -(monitor)-> :R, where :M's monitor READS its staged slot. This is the
+    # case a flat "stage everything, then monitor everything" pre-pass gets wrong: staging :M
+    # needs :S's monitor to exist already.
+    #
+    # Exact: S.b = 8 - a; M.b = S.b - M_a; d(a)/dt = -a; d(g)/dt = 0; d(M_a)/dt = S.b;
+    #        d(R_acc)/dt = M.b.
+    exact(u) = [-u[1], 0.0, _MONO_C - u[1], (_MONO_C - u[1]) - u[3]]
+
+    for (label, edges) in (
+            ("declaration order", [connect(:S => :b, :M => :in), connect(:M => :b, :R => :d_ext)]),
+            ("reverse order", [connect(:M => :b, :R => :d_ext), connect(:S => :b, :M => :in)]),
+        )
+        cm = couple(
+            [
+                Subsystem(_MonoDerived(); name = :S),
+                Subsystem(_DerivedReceiver(); name = :M),
+                Subsystem(_MonoReader(); name = :R),
+            ],
+            edges,
+        )
+        U = default_initial_state(cm)             # [a, g, M_a, R_acc] = [3.0, 1.0, 1.0, 0.0]
+        dU = similar(U)
+
+        cm(dU, U, nothing, 0.0)
+        @test dU ≈ exact(U)                       # $label
+
+        first_call = copy(dU)
+        cm(dU, [9.9, 9.9, 9.9, 9.9], nothing, 0.0)
+        cm(dU, U, nothing, 0.0)
+        @test dU == first_call                    # $label: pure function of (U, t)
+
+        cm(dU, U, nothing, 0.0)
+        @test (@allocated cm(dU, U, nothing, 0.0)) == 0
+    end
+end
+
+@testset "couple — a genuine monitor cycle is rejected by name" begin
+    # Each component's monitor reads the slot the other's monitor feeds: an algebraic loop, and
+    # the case the deleted blanket rule used to catch by accident.
+    err = try
+        couple(
+            [Subsystem(_DerivedReceiver(); name = :M1), Subsystem(_DerivedReceiver(); name = :M2)],
+            [connect(:M1 => :b, :M2 => :in), connect(:M2 => :b, :M1 => :in)],
+        )
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    msg = sprint(showerror, err)
+    @test occursin("cyclic monitor dependency", msg)
+    @test occursin(":M1", msg) && occursin(":M2", msg)
+    # The edges that form the cycle are named, in both directions, so the message says what to
+    # break rather than that something is wrong.
+    @test occursin("connect(:M1 => :b, :M2 => :in)", msg)
+    @test occursin("connect(:M2 => :b, :M1 => :in)", msg)
+    # Both readings are offered, because component granularity cannot tell them apart.
+    @test occursin("STATE", msg) && occursin("algebraic loop", msg)
+
+    # A one-node cycle: a component's monitor feeding its own staged slot.
+    @test_throws ArgumentError couple(
+        [Subsystem(_DerivedReceiver(); name = :M), Subsystem(_MonoReader(); name = :R)],
+        [connect(:M => :b, :M => :in), connect(:M => :b, :R => :d_ext)],
+    )
+
+    # NOT a cycle: the back edge carries a STATE, read live from U, so it orders nothing. This is
+    # the narrowing — the old blanket rule rejected this graph too.
+    @test couple(
+        [Subsystem(_DerivedReceiver(); name = :M), Subsystem(_MonoReader(); name = :R)],
+        [connect(:M => :b, :R => :d_ext), connect(:R => :acc, :M => :in)],
+    ) isa CytoZoo.CoupledModel
+
+    # NOT a cycle: a three-component chain, which is a DAG however the edges are declared.
+    @test couple(
+        [
+            Subsystem(_MonoDerived(); name = :S),
+            Subsystem(_DerivedReceiver(); name = :M),
+            Subsystem(_MonoReader(); name = :R),
+        ],
+        [connect(:M => :b, :R => :d_ext), connect(:S => :b, :M => :in)],
+    ) isa CytoZoo.CoupledModel
+end
+
+@testset "couple — feedthrough under the awkward inputs" begin
+    feed_nodes() = [Subsystem(_FeedEP(); name = :EP), Subsystem(_DerivedReceiver(); name = :M)]
+    feed_edges() = [connect(:EP => :c, :M => :in), connect(:M => :b, :EP => :jt)]
+
+    # ForwardDiff: the pre-pass now stages into a Float64 parameter vector BEFORE monitors run,
+    # so a Dual-valued U must still be reduced to its primal there or the write throws.
+    #
+    # And the result pins how much of this coupling the Jacobian omits. `_connect_value` freezes
+    # every connect input to its primal inside a Newton step, so BOTH legs of the feedthrough
+    # vanish from J: the true d(c)/dt = -1.5c + M_a, but J[1,1] = -0.5 (the model's own term
+    # only) and J[1,2] = 0; d(M_a)/dt = c is entirely staged, so its whole row is zero. Correct
+    # fixed point, approximate Jacobian — documented `connect` behaviour that this work does NOT
+    # change, asserted here because W3-01 flagged it for ADR-0008/W5-03: expect degraded Newton
+    # convergence on a stiff coupling, and treat any ForwardDiff sensitivity taken through this
+    # edge as incorrect rather than merely inexact.
+    cm = couple(feed_nodes(), feed_edges())
+    U = default_initial_state(cm)
+    J = ForwardDiff.jacobian(u -> (d = similar(u); cm(d, u, nothing, 0.0); d), U)
+    @test all(isfinite, J)
+    @test J == [-0.5 0.0; 0.0 0.0]
+
+    # `op = +` into a monitor-sourcing receiver. The pre-pass zeroes the slot and accumulates,
+    # then the component walk stages it AGAIN — a non-idempotent staging double-counts here, and
+    # would do it silently.
+    cm_add = couple(
+        [
+            Subsystem(_MonoDerived(); name = :S),
+            Subsystem(_DerivedReceiver(); name = :M),
+            Subsystem(_MonoReader(); name = :R),
+        ],
+        [
+            connect(:S => :b, :M => :in; op = +),
+            connect(:S => :ag, :M => :in; op = +),
+            connect(:M => :b, :R => :d_ext),
+        ],
+    )
+    Ua = default_initial_state(cm_add)             # [a, g, M_a, R_acc] = [3.0, 1.0, 1.0, 0.0]
+    dUa = similar(Ua)
+    # in = (8 - a) + (a + g) = 8 + g; M.b = in - M_a; d(M_a)/dt = in; d(R_acc)/dt = M.b
+    inv = 8.0 + Ua[2]
+    cm_add(dUa, Ua, nothing, 0.0)
+    @test dUa ≈ [-Ua[1], 0.0, inv, inv - Ua[3]]
+    cm_add(dUa, Ua, nothing, 0.0)                  # cross-sectional, not a running total
+    @test dUa ≈ [-Ua[1], 0.0, inv, inv - Ua[3]]
+    @test (@allocated cm_add(dUa, Ua, nothing, 0.0)) == 0
+
+    # `gain` on both legs of the feedthrough. The pre-pass and the walk must scale identically,
+    # or the answer depends on which staging ran last.
+    cm_g = couple(
+        feed_nodes(),
+        [connect(:EP => :c, :M => :in; gain = 2.0), connect(:M => :b, :EP => :jt; gain = 0.5)],
+    )
+    Ug = [2.0, 1.0]
+    dUg = similar(Ug)
+    cm_g(dUg, Ug, nothing, 0.0)
+    b = 2.0 * Ug[1] - Ug[2]                        # M.b = in - M_a, in = 2c
+    @test dUg ≈ [-0.5 * Ug[1] - 0.5 * b, 2.0 * Ug[1]]
+
+    # A non-Float64 state vector evaluates without error and to the right values.
+    Uf = Float32[2.0, 1.0]
+    dUf = similar(Uf)
+    cm32 = couple(feed_nodes(), feed_edges())
+    cm32(dUf, Uf, nothing, 0.0f0)
+    @test dUf == Float32[-0.5f0 * Uf[1] - (Uf[1] - Uf[2]), Uf[1]]
+
+    # ...but the monitor path is NOT element-type generic, and this pins the gap rather than
+    # implying it is covered. `couple` sizes both scratches from `eltype(layout.u0)`, and `u0`
+    # comes from `default_initial_state`, which is Float64 — so a Float32 solve still routes its
+    # monitors and staged inputs through Float64 storage. Asserting `eltype(dUf) === Float32`
+    # here would prove nothing: `similar(Uf)` guarantees it whatever the coupling does.
+    #
+    # PRE-EXISTING, not introduced by the ordered pre-pass (baseline `_monitors!` allocates the
+    # same scratches). Left as-is deliberately: it is W4-03's Float32/GPU criterion to satisfy,
+    # and widening it here would be an unrelated semantics change. Flip these to `=== Float32`
+    # when that work lands.
+    @test eltype(cm32.monitor_scratch) === Float64
+    @test eltype(cm32.source_scratch) === Float64
 end
