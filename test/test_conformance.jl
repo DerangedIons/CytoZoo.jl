@@ -1,8 +1,16 @@
 # A model-agnostic conformance harness. Any AbstractCellModel should pass it;
 # test_interface.jl keeps the ToRORd-specific value assertions.
 
-function check_interface_conformance(model; name::String, expect_monitors::Bool = false)
+# `inputs` sets a model's connect inputs, by name, on every instance the harness
+# evaluates: the slots only a `connect` edge stages, which a gotranx-generated split
+# half starts as NaN so that an unconnected input cannot pass for a real one. The
+# NaN-poisoned `du` checks below could not tell such an input from a slot the RHS
+# forgot to write.
+function check_interface_conformance(
+        model; name::String, expect_monitors::Bool = false, inputs::NamedTuple = (;),
+    )
     @testset "conformance — $name" begin
+        model = _with_inputs(model, inputs)
         n = num_states(model)
         @test n isa Int && n > 0
 
@@ -63,7 +71,7 @@ function check_interface_conformance(model; name::String, expect_monitors::Bool 
                 @test eltype(default_initial_state(M(T))) == T
             end
 
-            m32 = M(Float32)
+            m32 = _with_inputs(M(Float32), inputs)
             u32 = default_initial_state(m32)
             @test eltype(u32) == Float32
 
@@ -84,6 +92,17 @@ function check_interface_conformance(model; name::String, expect_monitors::Bool 
             @test all(isfinite, mon)
         end
     end
+end
+
+# A copy of `model` with `inputs` written into its writable parameters.
+function _with_inputs(model, inputs::NamedTuple)
+    isempty(inputs) && return model
+    m = deepcopy(model)
+    p = writable_parameters(m)
+    for (name, value) in pairs(inputs)
+        p[parameter_index(m, name)] = value
+    end
+    return m
 end
 
 @testset "Conformance harness on existing models" begin
