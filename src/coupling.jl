@@ -205,10 +205,11 @@ same slot is rejected at `couple` time. Other `op`s are not supported.
 
 Monitor sources cost one `monitor_values!` call per sourcing component per evaluation, which
 computes that model's **whole** monitor vector — wiring one monitor of a model with many pays
-for all of them. A component that sources a monitor may not itself receive a `connect` edge
-(rejected at `couple` time): its monitors are computed before the component walk stages any
-parameters, so a monitor reading a staged slot would silently see the previous evaluation's
-value.
+for all of them. A component that sources a monitor may itself receive `connect` edges: the
+pre-pass stages each monitor-sourcing component's inputs immediately before evaluating its
+monitors, walking them in dependency order, so a monitor reading a staged slot sees the current
+evaluation's value. What is rejected, at `couple` time, is a *cycle* — monitor edges that order
+a component before itself, which is an algebraic loop rather than a feedthrough.
 
 Under an implicit solver the connect input — state- or monitor-sourced alike — is frozen to its
 primal within each Newton step (see `ext/ForwardDiffExt.jl`): a correct fixed point but an
@@ -410,7 +411,11 @@ function _validate_specs(components::NamedTuple, shares::Tuple, connects::Tuple)
             throw(ArgumentError("connect target :$(cn.dst) has no parameter slot :$(cn.dst_slot)"))
     end
     _check_connect_op_conflicts(connects)
-    _check_monitor_source_receivers(components, connects)
+    # A monitor source that also RECEIVES a connect edge used to be rejected here outright: the
+    # pre-pass ran before any staging, so such a monitor would have read the previous
+    # evaluation's value. The pre-pass now stages each component immediately before evaluating
+    # its monitors, in topological order (`_monitor_component_order`), so the overlap is exact
+    # for any acyclic graph — and `_build_monitor_plan` rejects the cyclic ones by name.
     return nothing
 end
 
@@ -435,27 +440,6 @@ function _resolve_source(model, comp::Symbol, name::Symbol)
                 "monitors $(monitor_names(model)))"
         ),
     )
-end
-
-# A monitor-sourcing component's monitors are computed in one pre-pass, before the component walk
-# stages any connect input. If such a component also *received* an edge, a monitor of its that
-# read the staged slot would see the previous evaluation's value — a silent one-eval lag. The
-# overlap is rejected rather than lag-checked, since "does this monitor read that slot" is not
-# statically knowable.
-function _check_monitor_source_receivers(components::NamedTuple, connects::Tuple)
-    dsts = map(cn -> cn.dst, connects)
-    for cn in connects
-        _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
-        cn.src in dsts && throw(
-            ArgumentError(
-                "component :$(cn.src) sources the monitor :$(cn.src_state) and also receives a " *
-                    "connect edge; monitors are computed before any parameter is staged, so a " *
-                    "monitor reading a staged slot would lag by one evaluation. Source the " *
-                    "monitor from a component that receives no edges, or split the model."
-            ),
-        )
-    end
-    return nothing
 end
 
 # A connect receiver satisfies `writable_parameters` if it has the default `parameters` field
@@ -794,14 +778,25 @@ end
 """
     MonEntry
 
-One monitor-sourcing component's entry in a [`CoupledModel`](@ref)'s monitor pre-pass. `block` is
-the component's slice of the global state (as in [`CompEntry`](@ref)) and `range` its slice of
-the coupling's flat monitor scratch vector.
+One monitor-sourcing component's entry in a [`CoupledModel`](@ref)'s monitor pre-pass, in
+topological order over monitor-sourced edges. `block` is the component's slice of the global
+state (as in [`CompEntry`](@ref)) and `range` its slice of the coupling's flat monitor scratch.
+
+The remaining fields are the component's own staging, resolved exactly as [`CompEntry`](@ref)'s
+are and binding the same parameter vector: the pre-pass stages a component's connect inputs
+immediately BEFORE evaluating its monitors, so a monitor that reads a staged slot sees this
+evaluation's value. They are empty for a monitor source that receives no edge, which is the
+common case — then `_connect!` hits its no-op method and the pre-pass is exactly what it was.
 """
-struct MonEntry{M, B}
+struct MonEntry{M, B, P, OW, AD, MOW, MAD}
     model::M
     block::B
     range::UnitRange{Int}
+    params::P
+    overwrites::OW
+    adds::AD
+    monitor_overwrites::MOW
+    monitor_adds::MAD
 end
 
 # Identity in base — zero overhead on the Float64 / explicit-solver path. `ext/ForwardDiffExt.jl`
@@ -827,20 +822,34 @@ _entries(components, parent, classes, additive, gains, connects, layout, mon_off
 # type parameter, so the functor stays specialized.
 _block(idxs) = (idxs == first(idxs):last(idxs)) ? (first(idxs):last(idxs)) : copy(idxs)
 
+# Resolve every connect edge targeting `ck` into the tuples that stage it: state sources to
+# (global_state_index, dst_param, gain), monitor sources to (monitor_scratch_index, dst_param,
+# gain), partitioned by op so every per-eval write is a single concrete code path. `params` is the
+# receiver's writable vector (the private deepcopy `couple` made), or `nothing` when it receives
+# nothing. ONE function, used by both the monitor pre-pass and the component walk, so the two
+# cannot disagree about which slots a component stages or where their sources live.
+function _staging(components, connects, layout, mon_offsets, ck)
+    si = layout.solution_indices
+    ow_l, ad_l, mow_l, mad_l = _connect_plan(components, connects, ck)
+    toglobal(e) = (si[e[1]][e[2]], e[3], e[4])       # (src, src_local, dst_param, gain)
+    tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3], e[4])
+    has_edges = !(isempty(ow_l) && isempty(ad_l) && isempty(mow_l) && isempty(mad_l))
+    return (
+        has_edges ? writable_parameters(components[ck]) : nothing,
+        Tuple(map(toglobal, ow_l)),
+        Tuple(map(toglobal, ad_l)),
+        Tuple(map(tomonitor, mow_l)),
+        Tuple(map(tomonitor, mad_l)),
+    )
+end
+
 function _entry(components, parent, classes, additive, gains, connects, layout, mon_offsets, ck)
     si = layout.solution_indices
     frozen = _frozen_indices(components, parent, classes, additive, ck)
     accumulated = _accumulated_indices(components, parent, classes, ck)
     gained = _gained_indices(components, gains, ck)
-    ow_l, ad_l, mow_l, mad_l = _connect_plan(components, connects, ck)
-    toglobal(e) = (si[e[1]][e[2]], e[3], e[4])  # (src, src_local, dst_param, gain) -> (src_global, …)
-    tomonitor(e) = (mon_offsets[e[1]] + e[2], e[3], e[4])   # -> (monitor_scratch_index, …)
-    overwrites = map(toglobal, ow_l) |> Tuple
-    adds = map(toglobal, ad_l) |> Tuple
-    monitor_overwrites = map(tomonitor, mow_l) |> Tuple
-    monitor_adds = map(tomonitor, mad_l) |> Tuple
-    has_edges = !(isempty(ow_l) && isempty(ad_l) && isempty(mow_l) && isempty(mad_l))
-    params = has_edges ? writable_parameters(components[ck]) : nothing
+    params, overwrites, adds, monitor_overwrites, monitor_adds =
+        _staging(components, connects, layout, mon_offsets, ck)
     return CompEntry(
         components[ck], _block(si[ck]), params, frozen, accumulated, gained,
         overwrites, adds, monitor_overwrites, monitor_adds,
@@ -860,35 +869,138 @@ function _accumulating_slots(plan::Tuple)
     return Tuple(slots)
 end
 
-# Components sourcing at least one monitor, each with its slice of the coupling's flat monitor
-# scratch. Order follows first appearance in the edge list; `_entry` resolves monitor edges
-# against the same `offsets` map, so the two stay consistent. Empty when no edge sources a
-# monitor — then the pre-pass is a `Tuple{}` method and compiles away entirely.
-function _build_monitor_plan(components::NamedTuple, connects::Tuple, layout)
-    order = Symbol[]
+# Topological order for the monitor pre-pass. A MONITOR-sourced edge `u -> v` fills one of v's
+# staged slots from u's monitor, so if v also sources a monitor, u's monitors must be computed
+# before v is staged. Nothing else constrains the order: a STATE source is read live from the
+# global state vector, and a receiver that sources no monitor is staged in the component walk,
+# after every monitor is already computed.
+#
+# Nodes are COMPONENTS, not (component, monitor) pairs. `monitor_values!` fills a model's whole
+# monitor vector in one opaque call, so "does this monitor read that staged slot" is not
+# statically knowable — the same undecidability that motivated the blanket rejection this
+# replaces. Component granularity is conservative (it orders, and can reject, on a dependency an
+# individual monitor may not actually have) and still strictly more permissive than rejecting
+# every monitor-source/connect-receiver overlap.
+#
+# Kept SEPARATE from `_operator_order`: that sort carries share-owner precedence, this one
+# carries monitor dataflow, and the two are independent. Merging them would report a cycle on a
+# graph that is fine — a component owning a share with Y (Y first) while sourcing a monitor into
+# Y (X first) is contradictory only if the two constraints share a sort.
+function _monitor_component_order(
+        components::NamedTuple, connects::Tuple, mon_comps::Vector{Symbol}
+    )
+    edges = Tuple{Symbol, Symbol}[]   # (before, after)
     for cn in connects
         _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
-        cn.src in order || push!(order, cn.src)
+        (cn.src in mon_comps && cn.dst in mon_comps) || continue
+        push!(edges, (cn.src, cn.dst))
     end
+    isempty(edges) && return mon_comps
+
+    order = Symbol[]
+    remaining = copy(mon_comps)
+    while !isempty(remaining)
+        ready = filter(c -> !any(e -> e[2] === c && e[1] in remaining, edges), remaining)
+        isempty(ready) && _throw_monitor_cycle(components, connects, remaining, edges)
+        next = first(ready)                   # stable: first in declaration order
+        push!(order, next)
+        deleteat!(remaining, findfirst(==(next), remaining))
+    end
+    return order
+end
+
+# Recover ONE concrete cycle from the unresolved sub-graph, so the error names the edges a user
+# has to break rather than the whole tangle. Every node still in `remaining` has an incoming edge
+# from another node in `remaining`, so walking predecessors from any of them must revisit a node,
+# and that node closes the cycle. Returned in forward order with the first node repeated last.
+function _find_monitor_cycle(remaining::Vector{Symbol}, edges::Vector{Tuple{Symbol, Symbol}})
+    node = first(remaining)
+    seen = Symbol[]
+    while !(node in seen)
+        push!(seen, node)
+        i = findfirst(e -> e[2] === node && e[1] in remaining, edges)
+        node = edges[i][1]
+    end
+    m = findfirst(==(node), seen)
+    return [seen[m]; reverse(seen[(m + 1):end]); seen[m]]
+end
+
+# The cycle is reported at `couple()` time, in place of the blanket monitor-receive rejection.
+# The message does NOT claim to know whether this is an unsolvable algebraic loop or a cycle the
+# user could break, because at component granularity those are indistinguishable — it states both
+# readings and the action each implies.
+function _throw_monitor_cycle(
+        components::NamedTuple, connects::Tuple, remaining::Vector{Symbol},
+        edges::Vector{Tuple{Symbol, Symbol}}
+    )
+    cyc = _find_monitor_cycle(remaining, edges)
+    lines = String[]
+    for i in 1:(length(cyc) - 1)
+        u, v = cyc[i], cyc[i + 1]
+        for cn in connects
+            (cn.src === u && cn.dst === v) || continue
+            _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
+            push!(lines, "    connect(:$u => :$(cn.src_state), :$v => :$(cn.dst_slot))")
+        end
+    end
+    names = join(map(c -> ":$c", unique(cyc)), ", ")
+    return throw(
+        ArgumentError(
+            "cyclic monitor dependency among $names:\n" * join(lines, "\n") * "\n" *
+                "Every edge above carries a MONITOR, which its source computes from that " *
+                "component's staged parameter slots — so each edge orders its source before " *
+                "its destination, and together they order a component before itself. Two ways " *
+                "out, and which applies depends on the equations, not on the graph: (1) if any " *
+                "one of these quantities is also available as a STATE of its source component, " *
+                "wire that state instead — a state source is read live from the global state " *
+                "vector and imposes no order, breaking the cycle; (2) if each quantity " *
+                "genuinely needs the others' values within the same evaluation, this is an " *
+                "algebraic loop and cannot be solved as posed — restate the coupling, by " *
+                "promoting one quantity to an integrated state, or by carrying the contested " *
+                "flux on an accumulating share (`share(...; op = +)`), which imposes no " *
+                "ordering at all."
+        ),
+    )
+end
+
+# Components sourcing at least one monitor, each with its slice of the coupling's flat monitor
+# scratch, in TOPOLOGICAL order over monitor-sourced edges (see `_monitor_component_order`) — the
+# pre-pass stages and evaluates in this order, so it is semantically load-bearing, not cosmetic.
+# `_entry` resolves monitor edges against the same `offsets` map, so the two stay consistent.
+# Empty when no edge sources a monitor — then the pre-pass is a `Tuple{}` method and compiles
+# away entirely.
+function _build_monitor_plan(components::NamedTuple, connects::Tuple, layout)
+    mon_comps = Symbol[]
+    for cn in connects
+        _resolve_source(components[cn.src], cn.src, cn.src_state)[1] === :monitor || continue
+        cn.src in mon_comps || push!(mon_comps, cn.src)
+    end
+    order = _monitor_component_order(components, connects, mon_comps)
     offsets = Dict{Symbol, Int}()
     total = 0
     for ck in order
         offsets[ck] = total
         total += num_monitors(components[ck])
     end
-    return _mon_entries(components, layout, order, offsets, 1), offsets, total
+    return _mon_entries(components, connects, layout, order, offsets, 1), offsets, total
 end
 
-_mon_entries(components, layout, order, offsets, i) =
+_mon_entries(components, connects, layout, order, offsets, i) =
     i > length(order) ? () :
     (
-        _mon_entry(components, layout, offsets, order[i]),
-        _mon_entries(components, layout, order, offsets, i + 1)...,
+        _mon_entry(components, connects, layout, offsets, order[i]),
+        _mon_entries(components, connects, layout, order, offsets, i + 1)...,
     )
 
-function _mon_entry(components, layout, offsets, ck)
+function _mon_entry(components, connects, layout, offsets, ck)
     off = offsets[ck]
-    return MonEntry(components[ck], _block(layout.solution_indices[ck]), (off + 1):(off + num_monitors(components[ck])))
+    range = (off + 1):(off + num_monitors(components[ck]))
+    params, overwrites, adds, monitor_overwrites, monitor_adds =
+        _staging(components, connects, layout, offsets, ck)
+    return MonEntry(
+        components[ck], _block(layout.solution_indices[ck]), range,
+        params, overwrites, adds, monitor_overwrites, monitor_adds,
+    )
 end
 
 # Save the running value of every accumulating slot this component is about to overwrite. An
@@ -964,15 +1076,35 @@ _reset_accumulators!(dU, ::Tuple{}) = nothing
     return _reset_accumulators!(dU, Base.tail(slots))
 end
 
-# Monitor pre-pass: fill the flat monitor scratch from each monitor-sourcing component's own
-# `monitor_values!`. Monitors are algebraic in (U, t) and U does not change during an evaluation,
-# so computing them once up front is exactly equivalent to recomputing per receiver, and cheaper.
-# The source's state slice is copied through `_connect_value` first, which is what keeps a derived
-# input frozen to its primal inside an implicit solver's Newton step (see ext/ForwardDiffExt.jl)
-# and what keeps the scratch a plain real vector under ForwardDiff.
+# Monitor pre-pass: for each monitor-sourcing component IN TOPOLOGICAL ORDER, stage its connect
+# inputs and then fill its slice of the flat monitor scratch from its own `monitor_values!`.
+# Interleaved, not two-phase: staging a component can need another component's monitor (a monitor
+# chain), so "stage everything, then monitor everything" reads a stale slot. The topological order
+# guarantees every value staged here is final FOR THIS GRAPH'S OWN EDGES — a monitor feeding this
+# component was computed on an earlier iteration, and a state source is read live from U.
+#
+# The guarantee stops at the component boundary. A component whose `monitor_values!` depends on
+# state this coupling does not stage — most concretely a NESTED `CoupledModel` that sources a
+# monitor and has connect edges of its own — still lags: its inner components are staged by its
+# own `_run!`, which runs in the outer component walk, after this pre-pass has already called
+# `monitor_values!` on it. `_monitor_component_order` cannot see inside a component, so it cannot
+# order what it cannot see. That is pre-existing behaviour (the blanket rejection this replaces
+# never caught it either — a nested coupling sources a monitor without being a `dst`), and it is
+# NOT fixed here; it wants its own conservative rejection, which is a separate semantics change.
+#
+# Monitors are algebraic in (U, t) and U does not change during an evaluation, so computing them
+# once up front is exactly equivalent to recomputing per receiver, and cheaper. The source's state
+# slice is copied through `_connect_value` first, which is what keeps a derived input frozen to
+# its primal inside an implicit solver's Newton step (see ext/ForwardDiffExt.jl) and what keeps
+# the scratch a plain real vector under ForwardDiff.
+#
+# The component walk stages these slots AGAIN, which is deliberate and free of consequence:
+# `_connect!` zeroes a `+` slot before accumulating, so it is idempotent, and nothing it reads has
+# changed. Keeping `_run!` untouched is what confines this fix to the pre-pass.
 _monitors!(U, t, ::Tuple{}, mon, scratch) = nothing
 function _monitors!(U, t, mplan, mon, scratch)
     e = first(mplan)
+    _connect!(U, mon, e.params, e.overwrites, e.adds, e.monitor_overwrites, e.monitor_adds)
     n = length(e.block)
     @inbounds for i in 1:n
         scratch[i] = _connect_value(U[e.block[i]])
