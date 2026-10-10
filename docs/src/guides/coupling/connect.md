@@ -242,7 +242,8 @@ Before using `connect` in anger, read [Limitations](limitations.md). In brief:
 
 1. Under an implicit solver, a connect input is frozen to its primal value within each Newton
    step. The fixed point is correct but the Jacobian is approximate, so a tightly-coupled
-   stiff connect may converge poorly.
+   stiff connect may converge poorly, and a Rosenbrock method (`Rodas5P`) takes many more
+   steps even on a loose one.
 2. **Any derivative taken through a connect edge silently loses the coupling term.**
    Sensitivity analysis and gradient-based parameter fitting across a `connect` produce wrong
    answers, not merely inaccurate ones.

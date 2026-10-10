@@ -21,6 +21,22 @@ omits the coupling term, so it is approximate. For a loosely-coupled system this
 extra Newton iterations. For a *tightly*-coupled stiff `connect`, convergence can degrade
 badly.
 
+**Under a Rosenbrock method the cost is in steps, and it is large even for a loose
+coupling.** A Rosenbrock method (`Rodas5P`, `Rodas4`, ...) has no Newton iteration to absorb
+the error: it builds the Jacobian into every step and is only of its order with the exact one.
+With the coupling term missing, its error estimate forces small steps. A Rosenbrock-W method
+(`Rosenbrock23`), which is designed for an approximate Jacobian, and a Newton-based method
+(`FBDF`) do not pay this. Accepted steps at `reltol = 1e-8`, for a model split by gotranx and
+coupled back with `connect`, against the unsplit model:
+
+| | `Rodas5P` | `Rosenbrock23` | `FBDF` |
+|---|---|---|---|
+| 3-state toy (`test/fixtures/split_toy.ode`), 5 time units | 8128 vs 85 | 869 vs 880 | 212 vs 210 |
+| ToRORd–Land split at troponin (52 states), one 1000 ms beat | 14404 vs 1527 | 13115 vs 12550 | 1913 vs 1942 |
+
+All of them reach the right trajectory. Prefer a W-method or a BDF method when a `connect`
+edge closes a loop.
+
 **Consequence 2 — gradients are incorrect, not merely inaccurate.** Any ForwardDiff
 derivative taken *through* a connect edge loses that coupling term entirely. Concretely:
 
