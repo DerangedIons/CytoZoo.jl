@@ -8,10 +8,20 @@
 # reads the membrane's calcium `c` (a state), and the membrane reads troponin's
 # binding flux `J` (a monitor that depends on the `c` it was just sent, so it needs
 # the feedthrough ordering of the monitor pre-pass). The fixtures are committed
-# because this repo's CI has no Python. Regenerate all three, from the repository
-# root, with a gotranx newer than 2.4.0:
+# because this repo's CI has no Python. Regenerate all three (the whole model and
+# its two halves), from the repository root, with gotranx 2.5.0 or newer:
 #
-#   python test/fixtures/generate_split_toy.py
+#   gotranx ode2cytozoo test/fixtures/split_toy.ode \
+#       -o test/fixtures/split_toy_cytozoo --model-name SplitToy
+#   gotranx ode2cytozoo test/fixtures/split_toy.ode \
+#       -o test/fixtures/split_toy_membrane_cytozoo --model-name SplitToyMembrane \
+#       --remove-component troponin
+#   gotranx ode2cytozoo test/fixtures/split_toy.ode \
+#       -o test/fixtures/split_toy_troponin_cytozoo --model-name SplitToyTroponin \
+#       --keep-component troponin --v-name b
+#
+# Only a coupling's first component supplies its transmembrane potential, and the
+# troponin half has none, so `--v-name` points at its only state.
 
 using OrdinaryDiffEq
 
