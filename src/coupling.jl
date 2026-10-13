@@ -209,7 +209,8 @@ for all of them. A component that sources a monitor may itself receive `connect`
 pre-pass stages each monitor-sourcing component's inputs immediately before evaluating its
 monitors, walking them in dependency order, so a monitor reading a staged slot sees the current
 evaluation's value. What is rejected, at `couple` time, is a *cycle* — monitor edges that order
-a component before itself, which is an algebraic loop rather than a feedthrough.
+a component before itself. The check is per component, so it cannot tell an algebraic loop from
+a cycle that sourcing a state instead would break; the error names the edges and says both.
 
 Under an implicit solver the connect input — state- or monitor-sourced alike — is frozen to its
 primal within each Newton step (see `ext/ForwardDiffExt.jl`): a correct fixed point but an
@@ -902,7 +903,7 @@ function _monitor_component_order(
     while !isempty(remaining)
         ready = filter(c -> !any(e -> e[2] === c && e[1] in remaining, edges), remaining)
         isempty(ready) && _throw_monitor_cycle(components, connects, remaining, edges)
-        next = first(ready)                   # stable: first in declaration order
+        next = first(ready)                   # stable: first in `mon_comps` order
         push!(order, next)
         deleteat!(remaining, findfirst(==(next), remaining))
     end
@@ -1083,14 +1084,12 @@ end
 # guarantees every value staged here is final FOR THIS GRAPH'S OWN EDGES — a monitor feeding this
 # component was computed on an earlier iteration, and a state source is read live from U.
 #
-# The guarantee stops at the component boundary. A component whose `monitor_values!` depends on
-# state this coupling does not stage — most concretely a NESTED `CoupledModel` that sources a
-# monitor and has connect edges of its own — still lags: its inner components are staged by its
-# own `_run!`, which runs in the outer component walk, after this pre-pass has already called
-# `monitor_values!` on it. `_monitor_component_order` cannot see inside a component, so it cannot
-# order what it cannot see. That is pre-existing behaviour (the blanket rejection this replaces
-# never caught it either — a nested coupling sources a monitor without being a `dst`), and it is
-# NOT fixed here; it wants its own conservative rejection, which is a separate semantics change.
+# A NESTED `CoupledModel` that sources a monitor is covered too, though this pre-pass cannot see
+# inside it and calls its `monitor_values!` before the outer walk has run its `_run!`: a
+# coupling's own `monitor_values!` runs its pre-pass and stages its components for the `U` it is
+# given (see below), so it does not depend on what its last right-hand-side evaluation staged.
+# What is left outside the guarantee is a component whose `monitor_values!` reads something that
+# neither this coupling nor the component itself stages.
 #
 # Monitors are algebraic in (U, t) and U does not change during an evaluation, so computing them
 # once up front is exactly equivalent to recomputing per receiver, and cheaper. The source's state
@@ -1142,6 +1141,15 @@ function _connect!(U, mon, params, overwrites, adds, monitor_overwrites, monitor
     return nothing
 end
 
+# Stage every component's connect inputs, without evaluating anything: what `_run!` does before
+# each model call, for a caller that only needs the staged slots (`monitor_values!` below).
+_stage!(U, mon, ::Tuple{}) = nothing
+function _stage!(U, mon, plan)
+    e = first(plan)
+    _connect!(U, mon, e.params, e.overwrites, e.adds, e.monitor_overwrites, e.monitor_adds)
+    return _stage!(U, mon, Base.tail(plan))
+end
+
 # --- AbstractCellModel interface (layout/query methods) ---
 
 num_states(cm::CoupledModel) = cm.layout.num_states
@@ -1172,7 +1180,18 @@ function monitor_names(cm::CoupledModel)
     return Tuple(names)
 end
 
+# A component's monitor may read a slot a `connect` edge stages, so every receiver is staged for
+# THIS `U` before any monitor is evaluated: the pre-pass first (it fills the monitor scratch the
+# monitor-sourced edges read, in dependency order), then every component's inputs. Without it the
+# readout would use whatever the last right-hand-side evaluation left in those slots, and
+# `monitor_history` would compute every sample from one stale input.
+#
+# This is also what makes a NESTED coupling exact as a monitor source. The outer pre-pass asks it
+# for its monitors before the outer component walk reaches it, i.e. before its own `_run!` has
+# staged anything; staging here means it does not depend on that order.
 function monitor_values!(mon, U, t, cm::CoupledModel)
+    _monitors!(U, t, cm.monitor_plan, cm.monitor_scratch, cm.source_scratch)
+    _stage!(U, cm.monitor_scratch, cm.plan)
     si = cm.layout.solution_indices
     offset = 0
     for ck in keys(cm.components)

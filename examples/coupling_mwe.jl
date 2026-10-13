@@ -428,11 +428,12 @@ end
 #
 #       inject(:Redox => :J, :D => :w)
 #
-#   It was not built, and the reasons are worth keeping. A monitor source is resolved in the
-#   pre-pass, so (1) the sourcing component may not itself receive a `connect` edge — which the
-#   real consumer does, to read its driver's observables — and (2) monitor values pass through
+#   It was not built, and the reason is worth keeping. Monitor values pass through
 #   `_connect_value`, which extracts the primal of a `Dual`, so an injected flux would silently
-#   vanish from every derivative. A share never leaves `U` and has neither problem. Revisit only
-#   for a module that genuinely cannot carry the term as a state.
+#   vanish from every derivative. A share never leaves `U` and does not have that problem. (A
+#   second reason no longer holds: the sourcing component could not itself receive a `connect`
+#   edge, which the real consumer does to read its driver's observables. The monitor pre-pass is
+#   now ordered, so it can.) Revisit only for a module that genuinely cannot carry the term as a
+#   state.
 
 println("\nAll live demonstrations passed, including socket 5. The socket map has no ❌ rows left.")

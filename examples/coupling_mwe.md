@@ -73,11 +73,12 @@ Empty. Every socket is live.
 
 What remains is an alternative *spelling* for socket 5, not a missing capability: a new
 `inject(:Redox => :J, :D => :w)` edge sourcing a named DERIVED flux. It was not built, for two
-reasons worth keeping. A monitor source is resolved in a pre-pass, so the sourcing component may not
-itself receive a `connect` edge — which the real consumer does, to read its driver's `V_O2`,
-`V_SDH`, `V_He_F`; and monitor values pass through `_connect_value`, which extracts the primal of a
+a reason worth keeping. Monitor values pass through `_connect_value`, which extracts the primal of a
 `Dual`, so an injected flux would silently vanish from every derivative. A share never leaves `U`
-and has neither problem. Revisit only for a module that genuinely cannot carry the term as a state.
+and does not have that problem. (A second reason no longer holds: the sourcing component could not
+itself receive a `connect` edge, which the real consumer does to read its driver's `V_O2`, `V_SDH`,
+`V_He_F`. The monitor pre-pass is now ordered, so it can.) Revisit only for a module that genuinely
+cannot carry the term as a state.
 
 ## Run
 

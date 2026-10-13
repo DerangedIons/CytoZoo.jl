@@ -188,8 +188,8 @@ CytoZoo.monitor_names(::_AmbiguousName) = (:s,)
 CytoZoo.monitor_values!(mon, u, t, ::_AmbiguousName) = (mon[1] = 0.0; nothing)
 (::_AmbiguousName)(du, u, p, t) = (du[1] = 0.0; nothing)
 
-# Sources a monitor AND exposes a receiver slot whose staged value its monitor reads — the
-# one-eval lag hazard `couple` rejects, since the pre-pass runs before any staging.
+# Sources a monitor AND exposes a receiver slot whose staged value its monitor reads — exact
+# only because the pre-pass stages it immediately before evaluating its monitor.
 struct _DerivedReceiver <: CytoZoo.AbstractCardiacCellModel
     parameters::Vector{Float64}
 end
@@ -944,12 +944,13 @@ end
 # --- monitor dependency order (W3-02) -------------------------------------------------------
 #
 # The pre-pass's component order is a topological sort over monitor-sourced connect edges
-# between monitor-sourcing components. Exercised directly: while the blanket monitor-receive
-# rejection stands, no `couple()`-able graph carries an ordering constraint at all.
+# between monitor-sourcing components. Exercised directly here, and through `couple()` in the
+# feedthrough, chain and cycle testsets below.
 
 @testset "coupling — monitor component order" begin
     comps = (
         S = _MonoDerived(), D = _DerivedReceiver(), R = _MonoReader(), D2 = _DerivedReceiver(),
+        D3 = _DerivedReceiver(),
     )
 
     # :S's monitor feeds :D, which itself sources a monitor -> :S must precede :D, whatever
@@ -963,8 +964,17 @@ end
     state_back = (connect(:D => :b, :R => :d_ext), connect(:R => :acc, :D => :in))
     @test CytoZoo._monitor_component_order(comps, state_back, [:D]) == [:D]
 
-    # Unconstrained sources keep declaration order, so monitor_scratch offsets do not shift
-    # with an irrelevant permutation of the edge list.
+    # ...and that holds BETWEEN two monitor sources, which is where it decides something: :D2's
+    # monitor feeds :D (so :D2 first), while :D's STATE feeds :D2 back. Counting the state edge
+    # would close a cycle and reject a feedthrough whose first half also sources a monitor.
+    state_between = (
+        connect(:D => :a, :D2 => :in), connect(:D2 => :b, :D => :in), connect(:D => :b, :R => :d_ext),
+    )
+    @test CytoZoo._monitor_component_order(comps, state_between, [:D2, :D]) == [:D2, :D]
+    @test CytoZoo._monitor_component_order(comps, state_between, [:D, :D2]) == [:D2, :D]
+
+    # Unconstrained sources keep the order they are given (`_build_monitor_plan` passes them in
+    # order of first appearance in the edge list).
     indep = (connect(:S => :b, :R => :d_ext), connect(:D => :b, :R => :d_ext))
     @test CytoZoo._monitor_component_order(comps, indep, [:S, :D]) == [:S, :D]
     @test CytoZoo._monitor_component_order(comps, indep, [:D, :S]) == [:D, :S]
@@ -996,6 +1006,23 @@ end
     # A self-edge is a one-node cycle and must not be sorted past.
     selfcyc = (connect(:D => :b, :D => :in),)
     @test_throws ArgumentError CytoZoo._monitor_component_order(comps, selfcyc, [:D])
+
+    # The message names the LOOP, not everything stuck behind it. :D3 hangs off the :D/:D2 cycle
+    # and is listed first, so the search starts from it: only the two edges that close the loop
+    # may be named, and :D3 is not among the components.
+    tail = (
+        connect(:D2 => :b, :D3 => :in), connect(:D3 => :b, :R => :d_ext),
+        connect(:D => :b, :D2 => :in), connect(:D2 => :b, :D => :in),
+    )
+    tail_msg = try
+        CytoZoo._monitor_component_order(comps, tail, [:D3, :D, :D2])
+        ""
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("connect(:D => :b, :D2 => :in)", tail_msg)
+    @test occursin("connect(:D2 => :b, :D => :in)", tail_msg)
+    @test !occursin(":D3", tail_msg)
 end
 
 @testset "coupling — monitor pre-pass carries its own staging" begin
@@ -1011,13 +1038,16 @@ end
     @test e.monitor_overwrites === () && e.monitor_adds === ()
 
     # The pre-pass entry and the walk entry for one component bind the SAME parameter vector —
-    # the private deepcopy `couple` made — so the two stagings cannot disagree.
+    # the private deepcopy `couple` made — so the two stagings cannot disagree. Checked on a
+    # monitor source that receives an edge, the only kind with both entries.
     cm2 = couple(
-        [Subsystem(_MonoA(); name = :A), Subsystem(_MonoReader(); name = :R)],
-        [connect(:A => :d, :R => :d_ext)],
+        [Subsystem(_FeedEP(); name = :EP), Subsystem(_DerivedReceiver(); name = :M)],
+        [connect(:EP => :c, :M => :in), connect(:M => :b, :EP => :jt)],
     )
-    walk_R = only(filter(en -> en.model isa _MonoReader, collect(cm2.plan)))
-    @test walk_R.params === CytoZoo.writable_parameters(cm2.components.R)
+    mon_M = only(cm2.monitor_plan)
+    walk_M = only(filter(en -> en.model isa _DerivedReceiver, collect(cm2.plan)))
+    @test mon_M.params === walk_M.params
+    @test walk_M.params === CytoZoo.writable_parameters(cm2.components.M)
 
     # And the untouched path stays allocation-free.
     U = default_initial_state(cm)
@@ -1226,4 +1256,145 @@ end
     # when that work lands.
     @test eltype(cm32.monitor_scratch) === Float64
     @test eltype(cm32.source_scratch) === Float64
+end
+
+@testset "couple — a state edge between two monitor sources orders nothing" begin
+    # :D2's monitor feeds :D, whose monitor feeds :R, and :D's STATE feeds :D2 back. Both :D and
+    # :D2 source a monitor, so both are in the pre-pass; only the monitor edge orders them.
+    #
+    # Exact: D2.in = D_a; D2.b = D_a - D2_a; D.in = D2.b; D.b = D.in - D_a = -D2_a;
+    #        d(D_a)/dt = D.in; d(D2_a)/dt = D2.in; d(R_acc)/dt = D.b.
+    exact(u) = [u[1] - u[2], u[1], -u[2]]
+    for edges in (
+            [connect(:D => :a, :D2 => :in), connect(:D2 => :b, :D => :in), connect(:D => :b, :R => :d_ext)],
+            [connect(:D => :b, :R => :d_ext), connect(:D2 => :b, :D => :in), connect(:D => :a, :D2 => :in)],
+        )
+        cm = couple(
+            [
+                Subsystem(_DerivedReceiver(); name = :D),
+                Subsystem(_DerivedReceiver(); name = :D2),
+                Subsystem(_MonoReader(); name = :R),
+            ],
+            edges,
+        )
+        U = [2.0, 0.5, 0.0]                        # [a, D2_a, R_acc]
+        dU = similar(U)
+        cm(dU, U, nothing, 0.0)
+        @test dU == exact(U)
+        cm(dU, [9.9, 9.9, 9.9], nothing, 0.0)     # a probe at some other U
+        cm(dU, U, nothing, 0.0)
+        @test dU == exact(U)
+    end
+end
+
+@testset "couple — monitor readout stages this evaluation's inputs" begin
+    # `monitor_values!` on a coupling is public (`monitor_history` calls it per saved step) and
+    # runs OUTSIDE the right-hand side. A monitor that reads a staged slot must see the input
+    # that belongs to the U it is given, not whatever the last RHS evaluation left there.
+    cm = couple(
+        [Subsystem(_FeedEP(); name = :EP), Subsystem(_DerivedReceiver(); name = :M)],
+        [connect(:EP => :c, :M => :in), connect(:M => :b, :EP => :jt)],
+    )
+    @test monitor_names(cm) == (:M_b,)
+    U = [2.0, 1.0]                                 # [c, M_a]; M.b = c - M_a
+    mon = zeros(1)
+
+    monitor_values!(mon, U, 0.0, cm)               # before any RHS call: the slot holds its default
+    @test mon == [1.0]
+
+    dU = similar(U)
+    cm(dU, [9.0, 4.0], nothing, 0.0)               # an RHS evaluation somewhere else
+    monitor_values!(mon, U, 0.0, cm)
+    @test mon == [1.0]
+
+    # The readout leaves the right-hand side a function of (U, t) alone.
+    cm(dU, U, nothing, 0.0)
+    first_call = copy(dU)
+    monitor_values!(mon, [9.0, 4.0], 0.0, cm)
+    cm(dU, U, nothing, 0.0)
+    @test dU == first_call
+
+    # A slot staged from ANOTHER component's monitor: :M reads S.b = 8 - a, so the readout has to
+    # recompute :S's monitor for this U before it stages :M.
+    chain = couple(
+        [
+            Subsystem(_MonoDerived(); name = :S),
+            Subsystem(_DerivedReceiver(); name = :M),
+            Subsystem(_MonoReader(); name = :R),
+        ],
+        [connect(:S => :b, :M => :in), connect(:M => :b, :R => :d_ext)],
+    )
+    @test monitor_names(chain) == (:b, :ag, :M_b)
+    Uc = [3.0, 1.0, 1.0, 0.0]                      # [a, g, M_a, R_acc]
+    dUc = similar(Uc)
+    chain(dUc, [7.0, 2.0, 5.0, 0.0], nothing, 0.0)
+    monc = zeros(3)
+    monitor_values!(monc, Uc, 0.0, chain)
+    @test monc == [5.0, 4.0, 4.0]                  # [8 - a, a + g, (8 - a) - M_a]
+end
+
+@testset "couple — a nested coupling's monitors are exact" begin
+    # A nested `CoupledModel` stages its own components inside ITS `monitor_values!`, so the outer
+    # pre-pass, which asks it for its monitors before the component walk reaches it, gets this
+    # evaluation's values. Each case is checked at a first-ever call, and at U1 again after a
+    # probe at U2: a monitor that lagged by one evaluation fails both.
+    inner() = couple(
+        [Subsystem(_MonoA(); name = :A), Subsystem(_DerivedReceiver(); name = :M)],
+        [connect(:A => :d, :M => :in)],
+    )
+    function check(cm, exact, U1, U2)
+        dU = similar(U1)
+        cm(dU, U1, nothing, 0.0)
+        @test dU == exact(U1)
+        cm(dU, U2, nothing, 0.0)
+        @test dU == exact(U2)
+        cm(dU, U1, nothing, 0.0)
+        @test dU == exact(U1)
+        return nothing
+    end
+
+    # The nested coupling's monitor M.b = d - M_a drives a reader.
+    #   states [c, d, M_a, R_acc]
+    reader = couple(
+        [Subsystem(inner(); name = :I), Subsystem(_MonoReader(); name = :R)],
+        [connect(:I => :M_b, :R => :d_ext)],
+    )
+    check(
+        reader, u -> [-0.2 * u[1], -u[2], u[2], u[2] - u[3]],
+        [5.0, 2.0, 1.0, 0.0], [1.0, 7.0, 3.0, 0.5],
+    )
+    mon = zeros(num_monitors(reader))
+    monitor_values!(mon, [5.0, 4.0, 1.0, 0.0], 0.0, reader)
+    @test mon == [3.0]
+
+    # The nested coupling is itself a feedthrough, and the outer coupling sources its monitor.
+    #   states [c, M_a, R_acc]; M.b = c - M_a
+    feed = couple(
+        [Subsystem(_FeedEP(); name = :EP), Subsystem(_DerivedReceiver(); name = :M)],
+        [connect(:EP => :c, :M => :in), connect(:M => :b, :EP => :jt)],
+    )
+    outer_feed = couple(
+        [Subsystem(feed; name = :I), Subsystem(_MonoReader(); name = :R)],
+        [connect(:I => :M_b, :R => :d_ext)],
+    )
+    check(
+        outer_feed, u -> [-0.5 * u[1] - (u[1] - u[2]), u[1], u[1] - u[2]],
+        [2.0, 1.0, 0.0], [9.0, 4.0, 0.5],
+    )
+
+    # The nested monitor feeds a component that itself sources a monitor: the blanket rule this
+    # work replaced rejected this graph, so it must not build into a lagging one.
+    #   states [c, d, M_a, X_a, R_acc]; X.in = d - M_a; X.b = X.in - X_a
+    chained = couple(
+        [
+            Subsystem(inner(); name = :I),
+            Subsystem(_DerivedReceiver(); name = :X),
+            Subsystem(_MonoReader(); name = :R),
+        ],
+        [connect(:I => :M_b, :X => :in), connect(:X => :b, :R => :d_ext)],
+    )
+    check(
+        chained, u -> [-0.2 * u[1], -u[2], u[2], u[2] - u[3], u[2] - u[3] - u[4]],
+        [5.0, 2.0, 1.0, 0.25, 0.0], [1.0, 7.0, 3.0, 2.0, 0.5],
+    )
 end
