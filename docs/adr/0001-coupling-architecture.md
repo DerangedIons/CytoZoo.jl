@@ -88,11 +88,12 @@ path — no consumer justified maintaining a second, strictly less accurate solv
   `share(…; op = +)` — Modelica's *through* (flow) variable, where contributions sum, alongside
   the *across* variable that hard-discard `share` implements; see socket 5 in
   `examples/coupling_mwe.md`. What remains deferred is the alternative spelling
-  `inject(:X => :J, :D => :w)`, sourcing a named DERIVED flux. A monitor source is resolved in a
-  pre-pass, so it may not also receive a `connect` edge — which the ECCMitoRedox redox block does,
-  to read its driver's observables — and its value passes through `_connect_value`, which extracts
-  the primal of a `Dual` and would strip the contribution out of every derivative. Revisit only
-  for a module that cannot carry its contribution as a state.
+  `inject(:X => :J, :D => :w)`, sourcing a named DERIVED flux. A monitor's value passes through
+  `_connect_value`, which extracts the primal of a `Dual` and would strip the contribution out of
+  every derivative. (When this was written a monitor source also could not receive a `connect`
+  edge, which the ECCMitoRedox redox block does to read its driver's observables; the 2026-09-20
+  amendment below lifts that.) Revisit only for a module that cannot carry its contribution as a
+  state.
 - **GPU compatibility.** Not precluded — the design keeps structs isbits-friendly — but not
   shipped or tested.
 - **Non-ODE components.** DAE / algebraic-constraint coupling remains out of scope.
@@ -127,10 +128,16 @@ Granularity is per **component**, not per monitor, because `monitor_values!` fil
 monitor vector in one opaque call. The cycle check is therefore conservative; it is still
 strictly more permissive than the rule it replaces.
 
-Two limits are worth stating alongside it. The ordering is exact in value, not in the Jacobian:
-a feedthrough is still a `connect`, so under an implicit solver both its legs are frozen to their
-primal. And it does not reach inside a component — a nested `CoupledModel` that sources a monitor
-and carries its own `connect` edges still lags by one evaluation, because its inner walk stages
-after the outer pre-pass has already asked it for its monitors. That case is pre-existing (the
-blanket rejection did not catch it either) and is not detected; a conservative rejection for it
-is separate work.
+One limit is worth stating alongside it. The ordering is exact in value, not in the Jacobian: a
+feedthrough is still a `connect`, so under an implicit solver both its legs are frozen to their
+primal.
+
+The ordering cannot reach inside a component, which mattered for a nested `CoupledModel` that
+sources a monitor and carries `connect` edges of its own: its inner walk stages after the outer
+pre-pass has already asked it for its monitors, so it lagged by one evaluation, undetected, and
+the blanket rejection had only caught some of those graphs by accident. Rather than reject them,
+a coupling's own `monitor_values!` now runs its pre-pass and stages its components for the `U`
+it is given before it evaluates anything. A nested coupling is therefore exact as a monitor
+source, and the same change makes the public readout (`monitor_values!` on a coupling, and so
+`monitor_history`) independent of what the last right-hand-side evaluation staged; before it,
+every sample of a monitor that read a staged slot was computed from one stale input.
