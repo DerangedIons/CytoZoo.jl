@@ -1,0 +1,39 @@
+# A toy cell for test/test_generated_split.jl, with the coupling structure of an
+# excitation-contraction split (e.g. ToRORd-Land split at its troponin): the
+# membrane owns the cytosolic calcium `c`, and the troponin component owns the
+# bound fraction `b` and the binding flux `J`, which reads `c`. Split at
+# "troponin", each half needs one value from the other. The troponin half needs
+# `c`, a state of the membrane half. The membrane half needs `J`, an expression
+# of the troponin half that depends on the `c` it was just sent: a feedthrough.
+
+parameters("membrane",
+a = 0.7,
+tau = 2.0,
+g_c = 0.3,
+k_rel = 0.5,
+k_up = 0.8,
+)
+
+states("membrane",
+v = -1.0,
+c = 0.4,
+)
+
+parameters("troponin",
+k_on = 2.0,
+k_off = 0.5,
+b_max = 1.0,
+)
+
+states("troponin",
+b = 0.2,
+)
+
+expressions("membrane")
+J_rel = k_rel*exp(v)
+dv_dt = (a - v - g_c*c)/tau
+dc_dt = J_rel - k_up*c - J
+
+expressions("troponin")
+J = k_on*c*(b_max - b) - k_off*b
+db_dt = J
