@@ -90,17 +90,21 @@ write free of dynamic dispatch: each list is a homogeneous tuple of
 `U`, monitor indices into the coupling's flat monitor scratch.
 
 Alongside the plan, `couple` builds a **monitor pre-pass**: one entry per component that sources
-at least one monitor, carrying that component's state block and its slice of the scratch. A
+at least one monitor, carrying that component's state block, its slice of the scratch, and its
+own connect plan (resolved by the same helper the walk uses, binding the same parameter vector).
+The entries are in **topological order** over the monitor-sourced edges between them; edges that
+order a component before itself are a cycle, which `couple` rejects, naming the edges. A
 coupling with no monitor sources gets an empty tuple, so the pre-pass resolves to a
 `Tuple{}` method and vanishes.
 
 ## Evaluating the Coupled Right-Hand Side
 
 Each call to `(cm)(dU, U, p, t)` first runs the **monitor pre-pass**: for every monitor-sourcing
-component, its state slice is copied out of `U` and its `monitor_values!` fills that component's
-slice of the scratch. Monitors are algebraic in `(U, t)` and `U` does not change during an
-evaluation, so computing them once up front is exactly equivalent to recomputing them at each
-receiver, and cheaper when several receivers read the same source.
+component, in dependency order, its connect inputs are staged (as in step 1 below), its state
+slice is copied out of `U`, and its `monitor_values!` fills that component's slice of the
+scratch. Monitors are algebraic in `(U, t)` and `U` does not change during an evaluation, so
+computing them once up front is exactly equivalent to recomputing them at each receiver, and
+cheaper when several receivers read the same source.
 
 Then, for every component in `operator_order`:
 
@@ -128,9 +132,16 @@ Only `U` is rescaled, never `dU`: a `gain` converts an input, so a contributor's
 reaches the owner's slot unscaled. See [Share Edges](../guides/coupling/share.md) for why that
 asymmetry is the right default.
 
-The pre-pass running before all staging is why a monitor source may not also *receive* a connect
-edge: its monitors would be computed from parameters staged on the previous evaluation. `couple`
-rejects that overlap.
+Staging each monitor source immediately before evaluating it, in dependency order, is why a
+monitor source may also *receive* a connect edge: a monitor that reads a staged slot sees this
+evaluation's value, whether the slot is fed by a state or by another component's monitor. The
+walk then stages those components a second time in step 1, which changes nothing: a `+` slot is
+zeroed before it is summed, and nothing staging reads has moved.
+
+A coupling's own `monitor_values!` does the same before it evaluates anything: it runs the
+pre-pass and stages every component for the `U` it is given. That is what `monitor_history`
+calls for each saved step, and what an outer coupling's pre-pass calls on a nested coupling that
+sources a monitor, so neither depends on what the last right-hand-side evaluation left staged.
 
 `operator_order` places the **owner last** for every *hard-discard* shared slot, so the owner's
 write is the final one and therefore the one that survives.

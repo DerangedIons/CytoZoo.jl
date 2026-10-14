@@ -104,10 +104,10 @@ Carried forward deliberately, not overlooked:
 - **Flux injection as a distinct edge kind.** Additive contribution itself is shipped, as
   `share(…; op = +)` — Modelica's *through* (flow) variable alongside the *across* variable that
   hard-discard `share` implements. What was not built is the alternative spelling
-  `inject(:X => :J, :D => :w)`, sourcing a named DERIVED flux: a monitor source is resolved in a
-  pre-pass, so it may not also receive a `connect` edge, and its value passes through
-  `_connect_value`, which would strip the term out of every derivative. Revisit only for a module
-  that cannot carry its contribution as a state.
+  `inject(:X => :J, :D => :w)`, sourcing a named DERIVED flux: a monitor's value passes through
+  `_connect_value`, which would strip the term out of every derivative. (The other reason once
+  given, that a monitor source could not also receive a `connect` edge, no longer holds: the
+  pre-pass is ordered.) Revisit only for a module that cannot carry its contribution as a state.
 - **GPU compatibility.** Not precluded; the design keeps structs isbits-friendly. Not shipped
   or tested.
 - **Non-ODE components.** DAE and algebraic-constraint coupling remain out of scope.

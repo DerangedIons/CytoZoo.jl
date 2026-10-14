@@ -86,6 +86,21 @@ end
         @test mon == [2.0 - 0.25, 5.0 - 0.25]                    # declaration order, both read shared s
     end
 
+    @testset "coupled — monitor_history of a monitor that reads a staged input" begin
+        # M.b = (staged c) - M_a. Every sample must use the c of ITS OWN step, not the input the
+        # last right-hand-side evaluation of the solve left in the slot.
+        cm = couple(
+            [Subsystem(_FeedEP(); name = :EP), Subsystem(_DerivedReceiver(); name = :M)],
+            [connect(:EP => :c, :M => :in), connect(:M => :b, :EP => :jt)],
+        )
+        c = state_index(cm, :c)
+        a = state_index(cm, :M_a)
+        sol = solve(ODEProblem(cm, (0.0, 1.0)), Tsit5(); dt = 0.1, adaptive = false)
+        h = monitor_history(sol, cm)
+        @test h.names == (:M_b,)
+        @test all(h.values[1, j] == sol.u[j][c] - sol.u[j][a] for j in eachindex(sol.t))
+    end
+
     @testset "coupled — monitor_history end-to-end" begin
         cm = couple([Subsystem(_MonMock(2.0); name = :A), Subsystem(_MonMock(5.0); name = :B)])
         s_A = state_index(cm, :s)
