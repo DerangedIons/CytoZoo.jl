@@ -26,7 +26,8 @@ using Test
     @testset "type stability and allocations" begin
         d = ForwardDiff.Dual(1.0, 1.0)
         @test (@inferred CytoZoo.primal(d)) === 1.0
-        CytoZoo.primal(d)
-        @test (@allocated CytoZoo.primal(d)) == 0
+        alloc_primal(x) = @allocated CytoZoo.primal(x)
+        alloc_primal(d)
+        @test alloc_primal(d) == 0
     end
 end

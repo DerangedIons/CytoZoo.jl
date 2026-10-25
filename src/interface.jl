@@ -248,7 +248,7 @@ with ForwardDiff loaded, the extension unwraps `Dual`s (recursively, for nested 
 it, so guards such as `(S > 0) ? A / S : 0` decide on plain values under automatic
 differentiation. ForwardDiff >= 1.0 orders Duals by value and then by partials, so
 `Dual(0.0, 1.0) > 0` is `true` and a guard at exactly `S == 0` would take the `0/0` branch.
-Public but not exported, like `resolve_parameter`.
+Public API, not exported; call it as `CytoZoo.primal`.
 """
 @inline primal(x) = x
 
