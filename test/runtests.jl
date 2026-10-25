@@ -3,6 +3,7 @@ using Test
 
 @testset "CytoZoo.jl" begin
     include("test_interface.jl")
+    include("test_primal.jl")
     include("test_conformance.jl")
     include("test_generated_adapter.jl")
     include("test_generated_split.jl")
